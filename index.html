@@ -1,6 +1,24 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
+<script>
+  if (!localStorage.getItem("pos_user")) {
+    window.location.replace("login.html");
+  }
+</script>
+
+<script>
+function logout() {
+  if (confirm("Yakin ingin logout?")) {
+    localStorage.removeItem("pos_user");
+    localStorage.removeItem("pos_cashier_id");
+    localStorage.removeItem("pos_cashier_name");
+
+    window.location.replace("login.html");
+  }
+}
+</script>
+
 <meta charset="UTF-8" />
 <title>Tasaji POS Offline – Jubelio Style</title>
 <link rel="icon" type="image/png" href="favicon.png">
@@ -97,8 +115,21 @@ body {
   display: flex;
   flex-direction: column;
   padding: 10px 8px;
-  gap: 8px;
 }
+
+/* menu isi fleksibel */
+.left-tabs-menu{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+/* footer nempel bawah */
+.left-tabs-footer{
+  margin-top: auto;
+}
+
 .tab-btn{
   width: 100%;
   border: 1px solid #eee;
@@ -1251,6 +1282,26 @@ body {
   color:#666;
   margin-top:2px;
 }
+.logout-btn {
+  background: #fff;
+  color: #d32f2f;
+  border: 1px solid #f0f0f0;
+  margin-top: 8px;
+}
+
+.logout-btn .ico {
+  color: #d32f2f;
+}
+
+.logout-btn:hover {
+  background: #fdeaea;
+  border-color: #f5c6c6;
+}
+
+
+.logout-btn:hover {
+  background: #c62828;
+}
 
 </style>
 </head>
@@ -1327,29 +1378,47 @@ body {
   <div class="left-panel">
 
     <!-- SIDEBAR TAB -->
-    <aside class="left-tabs">
-      <button class="tab-btn active" id="tabSales" onclick="switchLeftTab('sales')">
-        <div class="ico">🛒</div>
-        <div>Jual</div>
-      </button>
-      <button class="tab-btn" id="tabTxn" onclick="switchLeftTab('txn')">
-        <div class="ico">📄</div>
-        <div>Trans</div>
-      </button>
-      <button class="tab-btn" id="tabSet" onclick="switchLeftTab('set')">
-        <div class="ico">⚙️</div>
-        <div>Setting</div>
-      </button>
-	  <button class="tab-btn" id="tabPrice" onclick="openPriceCheck()">
-  <div class="ico">💰</div>
-  <div>Cek</div>
-</button>
-<button class="tab-btn" id="tabReport" onclick="switchLeftTab('report')">
-  <div class="ico">📊</div>
-  <div>Laporan</div>
+   <aside class="left-tabs">
+
+  <!-- ===== MENU ATAS ===== -->
+  <div class="left-tabs-menu">
+    <button class="tab-btn active" id="tabSales" onclick="switchLeftTab('sales')">
+      <div class="ico">🛒</div>
+      <div>Jual</div>
+    </button>
+
+    <button class="tab-btn" id="tabTxn" onclick="switchLeftTab('txn')">
+      <div class="ico">📄</div>
+      <div>Trans</div>
+    </button>
+
+    <button class="tab-btn" id="tabSet" onclick="switchLeftTab('set')">
+      <div class="ico">⚙️</div>
+      <div>Setting</div>
+    </button>
+
+    <button class="tab-btn" id="tabPrice" onclick="openPriceCheck()">
+      <div class="ico">💰</div>
+      <div>Cek</div>
+    </button>
+
+    <button class="tab-btn" id="tabReport" onclick="switchLeftTab('report')">
+      <div class="ico">📊</div>
+      <div>Laporan</div>
+    </button>
+  </div>
+
+  <!-- ===== FOOTER BAWAH ===== -->
+  <div class="left-tabs-footer">
+    <button class="tab-btn logout-btn" onclick="logout()">
+  <div class="ico">⏻</div>
+  <div>Logout</div>
 </button>
 
-    </aside>
+  </div>
+
+</aside>
+
 
     <div class="left-content">
 
@@ -2158,7 +2227,8 @@ function applyShiftX(mm){
 function openPriceCheck(){
   // buka tab baru ke halaman cek-harga
   // path relatif: karena file cek-harga.html satu folder dengan pos.html
-  window.open("/cek-harga.html", "_blank");
+   window.open("cek-harga.html", "_blank"); //offline
+   window.open("/cek-harga.html", "_blank"); //online
 }
 
 function formatDateID(iso){
@@ -5074,4 +5144,3 @@ async function loadReport(forceRefresh){
 
 </body>
 </html>
-
