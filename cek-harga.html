@@ -395,7 +395,7 @@ function getFinalPrice(itemCode, qty) {
    LOAD ALL MASTER ITEMS (batch)
 ============================= */
 async function loadMasterData(){
-  const { data: items } = await supabase
+  const { data: items } = await sb
     .from("master_items")
     .select("item_code,item_name,thumbnail,barcode,available_qty")
     .order("item_name");
@@ -430,7 +430,7 @@ VIEW = PRODUCTS.filter(p =>
 
 
 async function loadPriceMap(){
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from("product_prices")
     .select("item_code,kategori_harga,harga");
 
@@ -447,7 +447,7 @@ async function loadPriceMap(){
 }
 
 async function loadPackingMap(){
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from("product_packing")
     .select("item_code,pcs_per_karton");
 
@@ -626,4 +626,5 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 </body>
 </html>
+
 
