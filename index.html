@@ -3834,7 +3834,7 @@ Object.entries(appliedObj).forEach(([k, amt]) => {
     // ====== ONLINE ======
     const supabaseOK = await canReachSupabase();
     if(isOnline() && supabaseOK){
-      let q = supabase
+      let q = sb
         .from("pos_sales_orders")
         .select("salesorder_no,grand_total,cashier_id,cashier_name,transaction_date")
         .gte("transaction_date", startISO)
