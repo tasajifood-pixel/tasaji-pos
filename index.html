@@ -2,12 +2,14 @@
 <html lang="id">
 <head>
 <script>
+// ===== AUTH / LOGIN =====
   if (!localStorage.getItem("pos_user")) {
     window.location.replace("login.html");
   }
 </script>
 
 <script>
+// ===== AUTH / LOGIN =====
 function logout() {
   if (confirm("Yakin ingin logout?")) {
     localStorage.removeItem("pos_user");
@@ -1929,6 +1931,7 @@ body{
 /* =====================================================
    SUPABASE
 ===================================================== */
+// ===== CONFIG =====
 const supabase = window.supabase.createClient(
   "https://fpjfdxpdaqtopjorqood.supabase.co",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZwamZkeHBkYXF0b3Bqb3Jxb29kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NjU2NDUsImV4cCI6MjA3NjU0MTY0NX0.7cSIF32p9SHaHHlUcMFrrQSq7JBOdP4LneEvcMRrtXU"
@@ -2010,6 +2013,7 @@ if (customerInput) {
 /* =====================================================
    STATE
 ===================================================== */
+// ===== STATE =====
 let page = 1;
 const pageSize = 25;
 let currentQuery = "";
@@ -2285,6 +2289,7 @@ function updateSwitchCashierButton(){
     : "Ganti kasir";
 }
 
+// ===== UTILITIES =====
 const formatRupiah = n => "Rp " + Number(n || 0).toLocaleString("id-ID");
 
 function applyShiftX(mm){
@@ -2315,6 +2320,7 @@ function normalizePhone(phone) {
 /* =====================================================
    HOLD / PARKED ORDERS (per komputer - localStorage)
 ===================================================== */
+// ===== HOLD TRANSACTION =====
 function getHoldKey(){
   return "pos_holds_v1"; // per komputer (browser) saja
 }
@@ -3076,6 +3082,7 @@ if (!outOfStock || !requireStock) {
 /* =====================================================
    CART LOGIC
 ===================================================== */
+// ===== CART =====
   async function addToCart(p){
 
   // ✅ nomor order: online pakai server, offline pakai local
@@ -3337,6 +3344,7 @@ searchInput.addEventListener("keydown", async (e) => {
 /* =====================================================
    PAGE SWITCH: CASHIER <-> PAYMENT
 ===================================================== */
+// ===== PAYMENT =====
 async function goToPayment() {
   if (!cart.length) {
     alert("Belum ada item di keranjang");
