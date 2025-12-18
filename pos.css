@@ -5,17 +5,17 @@
 :root{
   --shiftX: 0mm;
 
-  --bg: #f6f7fb;
+  --bg: #f2f4f7;
   --card: #ffffff;
-  --text: #1f2937;
+  --text: #111827;
   --muted: #6b7280;
-  --border: #e5e7eb;
+  --border: #e2e8f0;
 
-  --primary: #F9A825;
-  --primary-2: #e39200;
+  --primary: #f59e0b;
+  --primary-2: #d97706;
 
-  --shadow-sm: 0 2px 10px rgba(0,0,0,.06);
-  --shadow-md: 0 10px 28px rgba(0,0,0,.10);
+  --shadow-sm: 0 4px 14px rgba(15, 23, 42, .06);
+  --shadow-md: 0 12px 30px rgba(15, 23, 42, .12);
 
   --r-sm: 10px;
   --r-md: 14px;
@@ -34,19 +34,25 @@
   border:none;
   border-radius:10px;
   cursor:pointer;
-  background:#F9A825;
+  background: linear-gradient(120deg, #f59e0b, #f3b23c);
   color:#fff;
+  box-shadow: 0 10px 20px rgba(245, 158, 11, .22);
+  transition: all .2s ease;
 }
 .btn-cashier:hover{
-  background:#e0a800;
+  background:#d97706;
+  transform: translateY(-1px);
 }
 
 * { box-sizing: border-box; }
 body{
   margin:0;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  background: var(--bg);
+  background: radial-gradient(circle at 20% 20%, rgba(245, 158, 11, 0.04), transparent 28%),
+              radial-gradient(circle at 80% 0%, rgba(79, 70, 229, 0.05), transparent 24%),
+              var(--bg);
   color: var(--text);
+  letter-spacing: 0.01em;
 }
 
 .pos-wrapper {
@@ -59,23 +65,28 @@ body{
    HEADER
 ===================================================== */
 .pos-header{
-  height: 56px;
-  background: var(--card);
+  height: 60px;
+  background: linear-gradient(135deg, #fff, #f9fafb);
   border-bottom: 1px solid var(--border);
   display:flex;
   align-items:center;
   justify-content:space-between;
-  padding: 0 16px;
-  box-shadow: 0 2px 12px rgba(0,0,0,.04);
+  padding: 0 18px;
+  box-shadow: var(--shadow-sm);
 }
 
 .pos-header-left {
-  font-weight: bold;
-  color: #F9A825;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: .02em;
 }
 .pos-header-right {
   font-size: 12px;
-  color: #666;
+  color: var(--muted);
+  background: #eef2f7;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
 }
 
 /* =====================================================
@@ -98,12 +109,13 @@ body{
 
 /* sidebar tab */
 .left-tabs{
-  width: 64px;
+  width: 68px;
   background: #fff;
-  border-right: 1px solid #e0e0e0;
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 10px 8px;
+  padding: 12px 10px;
+  box-shadow: 4px 0 18px rgba(15, 23, 42, .04);
 }
 
 /* menu isi fleksibel */
@@ -122,11 +134,11 @@ body{
 .tab-btn{
   width:100%;
   border: 1px solid var(--border);
-  background: #fff;
-  border-radius: 12px;
-  padding: 10px 0;
+  background: linear-gradient(145deg, #fff, #f7f8fb);
+  border-radius: 14px;
+  padding: 12px 0;
   cursor:pointer;
-  transition:.15s;
+  transition: all .18s ease;
   display:flex;
   flex-direction:column;
   align-items:center;
@@ -136,11 +148,11 @@ body{
 }
 .tab-btn:hover{
   box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 .tab-btn.active{
   border-color: var(--primary);
-  background: #FFF8E1;
+  background: rgba(245, 158, 11, .08);
   font-weight: 800;
 }
 
@@ -177,34 +189,37 @@ body{
 ===================================================== */
 .product-toolbar {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 
 .search-input {
   flex: 1;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: #fff;
-  padding: 0 8px;
+  padding: 0 12px;
+  box-shadow: 0 1px 6px rgba(15,23,42,.04);
 }
 .search-input input {
   width: 100%;
-  height: 34px;              /* ⬅️ kunci tinggi */
+  height: 38px;              /* ⬅️ kunci tinggi */
   border: none;
   outline: none;
   padding: 0 6px;            /* ⬅️ vertikal di-nol-kan */
   font-size: 13px;
-  line-height: 34px;         /* ⬅️ teks tepat di tengah */
+  line-height: 38px;         /* ⬅️ teks tepat di tengah */
 }
 
 .btn {
-  height: 34px;              /* ⬅️ sama dengan input */
-  padding: 0 12px;           /* ⬅️ hanya horizontal */
-  border-radius: 10px;
+  height: 38px;              /* ⬅️ sama dengan input */
+  padding: 0 14px;           /* ⬅️ hanya horizontal */
+  border-radius: 12px;
   font-size: 13px;
   cursor: pointer;
+  border: 1px solid transparent;
+  transition: all .18s ease;
 }
 
 .btn-cari{
@@ -215,6 +230,7 @@ body{
 .btn-cari:hover{
   background: var(--primary-2);
   border-color: var(--primary-2);
+  box-shadow: 0 8px 16px rgba(217, 119, 6, .2);
 }
 /* =====================================================
    PRODUCT GRID
@@ -223,27 +239,28 @@ body{
   flex: 1;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 4px;
 }
 
 /* =====================================================
    PRODUCT CARD
 ===================================================== */
 .product-card{
-  background:#fff;
+  background: linear-gradient(180deg, #fff, #f9fafb);
   border:1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 16px;
   display:flex;
   flex-direction:column;
   cursor:pointer;
-  transition:.15s;
+  transition: all .2s ease;
   min-height: 260px;
-  box-shadow: 0 1px 10px rgba(0,0,0,.04);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, .06);
 }
 .product-card:hover{
-  box-shadow: 0 10px 26px rgba(0,0,0,.10);
-  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-4px);
 }
 
 
@@ -270,15 +287,17 @@ body{
 .product-image {
   width: 100%;
   aspect-ratio: 1 / 1;
-  background: #f3f3f3;
+  background: radial-gradient(circle at 20% 20%, rgba(245, 158, 11, .08), transparent 60%),
+              #f8fafc;
   object-fit: contain;
+  padding: 12px;
 }
 
 /* =====================================================
    PRODUCT BODY (NAMA PRODUK)
 ===================================================== */
 .product-body {
-  padding: 6px 10px;
+  padding: 10px 12px 6px;
   flex: 1;
   display: flex;
   align-items: flex-start;
@@ -286,9 +305,10 @@ body{
 
 .product-name {
   font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-  max-height: 34px;
+  font-weight: 700;
+  line-height: 1.4;
+  max-height: 38px;
+  color: var(--text);
   overflow: hidden;
 
   display: -webkit-box;
@@ -301,28 +321,33 @@ body{
 ===================================================== */
 .product-footer {
   margin-top: auto;
-  padding: 4px 10px 8px;
-  border-top: 1px solid #eee;
+  padding: 10px 12px 12px;
+  border-top: 1px dashed #e5e7eb;
 
   display: flex;
   justify-content: space-between;
   align-items: center;
 
   font-size: 12px;
-  min-height: 30px;
+  min-height: 48px;
 }
 
 .product-price {
-  font-weight: bold;
-  color: #1a7c1a;
-  margin-bottom: 1px;
+  font-weight: 800;
+  color: #065f46;
+  margin-bottom: 2px;
+  font-size: 14px;
 }
 
 .product-stock {
   font-size: 12px;
-  font-weight: 600;
-  color: #1565c0;
+  font-weight: 700;
+  color: #0f172a;
   white-space: nowrap;
+  background: #eef2ff;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #e0e7ff;
 }
 
 /* =====================================================
@@ -331,11 +356,12 @@ body{
 .cart-panel {
   flex: 2;
   min-width: 380px;
-  border-left: 1px solid #ddd;
-  background: #fff;
-  padding: 14px;
+  border-left: 1px solid var(--border);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  padding: 16px;
   display: flex;
   flex-direction: column;
+  box-shadow: -6px 0 18px rgba(15,23,42,.04);
 }
 
 /* =====================================================
@@ -390,12 +416,17 @@ body{
 .cart-items {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .cart-item {
-  border: 1px solid #eee;
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 0;
+  background: #fff;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, .05);
 }
 .cart-item-name {
   font-weight: 600;
