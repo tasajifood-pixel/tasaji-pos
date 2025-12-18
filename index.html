@@ -2929,7 +2929,7 @@ async function loadTransactions(resetPage){
   const from = (TXN_PAGE-1) * TXN_PAGE_SIZE;
   const to = from + TXN_PAGE_SIZE - 1;
 
-  let q = supabase
+  let q = sb
     .from("pos_sales_orders")
     .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,is_paid", { count:"exact" })
     .order("transaction_date", { ascending:false });
