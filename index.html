@@ -11,7 +11,6 @@
 <!-- =====================================================
      SUPABASE SDK
 ===================================================== -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <link rel="stylesheet" href="./pos.css">
 </head>
@@ -43,19 +42,19 @@
       POS Tasaji Food<br>
       Silakan pilih identitas Anda
     </p>
-<button onclick="selectCashier('KSR-01','Rifqi')" class="btn-cashier">
+<button class="btn-cashier">
   Rifqi — Kasir 01
 </button>
 
-<button onclick="selectCashier('KSR-02','Inan')" class="btn-cashier">
+<button class="btn-cashier">
   Inan — Kasir 02
 </button>
 
-<button onclick="selectCashier('KSR-03','Imad')" class="btn-cashier">
+<button class="btn-cashier">
   Imad — Kasir 03
 </button>
 
-<button onclick="selectCashier('KSR-04','Ahmad')" class="btn-cashier">
+<button class="btn-cashier">
   Ahmad — Kasir 04
 </button>
   </div>
@@ -68,7 +67,7 @@
 
   <div class="pos-header-right">
     <span id="cashierInfo" style="margin-right:10px;font-size:12px;color:#666;"></span>
-    <button id="btnSwitchCashier" onclick="resetCashier()" style="
+    <button id="btnSwitchCashier" style="
       border:none;
       background:#eee;
       padding:6px 10px;
@@ -92,27 +91,27 @@
 
   <!-- ===== MENU ATAS ===== -->
   <div class="left-tabs-menu">
-    <button class="tab-btn active" id="tabSales" onclick="switchLeftTab('sales')">
+    <button class="tab-btn active" id="tabSales">
       <div class="ico">🛒</div>
       <div>Jual</div>
     </button>
 
-    <button class="tab-btn" id="tabTxn" onclick="switchLeftTab('txn')">
+    <button class="tab-btn" id="tabTxn">
       <div class="ico">📄</div>
       <div>Trans</div>
     </button>
 
-    <button class="tab-btn" id="tabSet" onclick="switchLeftTab('set')">
+    <button class="tab-btn" id="tabSet">
       <div class="ico">⚙️</div>
       <div>Setting</div>
     </button>
 
-    <button class="tab-btn" id="tabPrice" onclick="openPriceCheck()">
+    <button class="tab-btn" id="tabPrice">
       <div class="ico">💰</div>
       <div>Cek</div>
     </button>
 
-    <button class="tab-btn" id="tabReport" onclick="switchLeftTab('report')">
+    <button class="tab-btn" id="tabReport">
       <div class="ico">📊</div>
       <div>Laporan</div>
     </button>
@@ -120,7 +119,7 @@
 
   <!-- ===== FOOTER BAWAH ===== -->
   <div class="left-tabs-footer">
-    <button class="tab-btn logout-btn" onclick="logout()">
+    <button class="tab-btn logout-btn">
   <div class="ico">⏻</div>
   <div>Logout</div>
 </button>
@@ -137,11 +136,37 @@
 ================================================== -->
 <section class="product-panel" id="panel-product">
   <div class="product-toolbar">
-    <div class="search-input">
-      <input id="searchInput" placeholder="Cari nama / kode / barcode">
-    </div>
-    <button class="btn btn-cari" id="btnCari">Cari</button>
+  <div class="search-input">
+    <input id="searchInput" placeholder="Cari nama / kode / barcode">
   </div>
+
+  <button class="btn btn-cari" id="btnCari">Cari</button>
+
+</div>
+
+
+<!-- SORT PRODUK -->
+<!-- SORT PRODUK -->
+<div class="product-sort" id="productSort">
+
+  <div class="sort-main">
+    <button class="sort-btn active" data-sort="best">🔥 Terlaris</button>
+    <button class="sort-btn" data-sort="latest">🕒 Terbaru</button>
+    <button class="sort-btn" data-sort="az">A–Z</button>
+  </div>
+
+  <!-- PERIODE TERLARIS (muncul hanya saat pilih Terlaris) -->
+  <div class="sort-period" id="bestPeriodBox">
+    <button class="period-btn active" data-period="7d">7 Hari</button>
+    <button class="period-btn" data-period="30d">30 Hari</button>
+    <button class="period-btn" data-period="90d">90 Hari</button>
+    <button class="period-btn" data-period="180d">6 Bulan</button>
+    <button class="period-btn" data-period="365d">1 Tahun</button>
+  </div>
+
+</div>
+
+
 
   <div id="productGrid" class="product-grid"></div>
 
@@ -205,9 +230,9 @@
             </div>
 
             <div class="quick-cash" id="quickCash" style="display:none; margin-top:12px; gap:10px;">
-              <button class="btn" type="button" onclick="setCash(calcTotal())">Sama</button>
-              <button class="btn" type="button" onclick="setCash(50000)">Rp50.000</button>
-              <button class="btn" type="button" onclick="setCash(100000)">Rp100.000</button>
+              <button class="btn" type="button">Sama</button>
+              <button class="btn" type="button">Rp50.000</button>
+              <button class="btn" type="button">Rp100.000</button>
             </div>
 
             <div class="pay-input" style="margin-top:16px;">
@@ -221,7 +246,7 @@
             </div>
 
             <div class="pay-footer-row">
-              <button id="btnFinishPayment" class="btn-pay disabled" onclick="processPayment()" disabled>
+              <button id="btnFinishPayment" class="btn-pay disabled" disabled>
                 Selesaikan Transaksi
               </button>
             </div>
@@ -237,8 +262,25 @@
           <div class="search-input">
             <input id="txnSearchInput" placeholder="Cari No Order / Nama / Telepon">
           </div>
-          <button class="btn btn-cari" onclick="loadTransactions(true)">Cari</button>
-          <button class="btn" onclick="loadTransactions(true)" title="Refresh">↻</button>
+		  <!-- FILTER TRANSAKSI (mirip laporan) -->
+<div class="txn-filter" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+  <div style="font-size:12px; font-weight:700; color:#333;">Tanggal</div>
+
+  <input type="date" id="txnDateFrom" style="width:150px;" />
+  <span style="font-weight:700;">–</span>
+  <input type="date" id="txnDateTo" style="width:150px;" />
+
+  <button class="btn-outline" type="button">Hari Ini</button>
+  <button class="btn-outline" type="button">Kemarin</button>
+
+  <select id="txnCashierFilter" style="width:220px;">
+    <option value="ALL">Semua Kasir</option>
+    <option value="ACTIVE">Kasir Aktif Saja</option>
+  </select>
+</div>
+
+          <button class="btn btn-cari">Cari</button>
+          <button class="btn" title="Refresh">↻</button>
         </div>
 
         <div class="txn-body">
@@ -252,8 +294,8 @@
 
             <div class="txn-list-items" id="txnList"></div>
             <div style="padding:10px 12px; border-top:1px solid #eee; background:#fafafa; display:flex; gap:8px;">
-              <button class="btn" style="flex:1" onclick="txnPrevPage()">Prev</button>
-              <button class="btn" style="flex:1" onclick="txnNextPage()">Next</button>
+              <button class="btn" style="flex:1">Prev</button>
+              <button class="btn" style="flex:1">Next</button>
             </div>
           </div>
 
@@ -271,9 +313,9 @@
             </div>
 
             <div class="txn-actions" id="txnDetailActions" style="display:none;">
-  <button class="btn-outline" onclick="txnReprint()">🖨 Cetak Ulang Struk</button>
-  <button class="btn-outline" onclick="txnSyncJubelio()">☁️ Sync Jubelio</button>
-  <button class="btn-primary" onclick="txnReorder()">🔁 Pesan Ulang</button>
+  <button class="btn-outline">🖨 Cetak Ulang Struk</button>
+  <button class="btn-outline">☁️ Sync Jubelio</button>
+  <button class="btn-primary">🔁 Pesan Ulang</button>
 </div>
 
           </div>
@@ -363,7 +405,7 @@
           Otomatis sync jika cache lebih lama dari jam ini.
         </div>
 
-        <button class="btn-primary" onclick="manualSyncProducts()">
+        <button class="btn-primary">
           🔄 Sync Sekarang
         </button>
 
@@ -393,8 +435,8 @@
 <input type="date" id="reportDateTo" style="width:170px;" />
 
 
-        <button class="btn-outline" type="button" onclick="reportSetToday()">Hari Ini</button>
-        <button class="btn-outline" type="button" onclick="reportSetYesterday()">Kemarin</button>
+        <button class="btn-outline" type="button">Hari Ini</button>
+        <button class="btn-outline" type="button">Kemarin</button>
 
         <select id="reportCashierFilter" style="width:240px;">
           <option value="ALL">Semua Kasir</option>
@@ -450,11 +492,11 @@
   padding-bottom:8px;
 ">
   <div style="display:flex; gap:6px; flex-wrap:wrap;">
-    <button class="btn-outline" onclick="openHoldModal()">🗂 Tersimpan</button>
-    <button class="btn-outline" onclick="parkCurrentOrder()">💾 Simpan</button>
+    <button class="btn-outline">🗂 Tersimpan</button>
+    <button class="btn-outline">💾 Simpan</button>
   </div>
 
-  <button class="cart-reset" onclick="resetCart()">Reset</button>
+  <button class="cart-reset">Reset</button>
 </div>
 
 
@@ -479,7 +521,7 @@
     </div>
 
     <div style="text-align:right; margin-bottom:8px;">
-      <button class="btn-back" style="padding:8px 12px;" onclick="backToEdit()">
+      <button class="btn-back" style="padding:8px 12px;">
         🛒 Ubah Transaksi
       </button>
     </div>
@@ -495,7 +537,7 @@
       </div>
     </div>
 
-   <button id="btnNext" class="btn-primary" style="width:100%;margin-top:8px;" onclick="goToPayment()">
+   <button id="btnNext" class="btn-primary" style="width:100%;margin-top:8px;">
   Selanjutnya
 </button>
   </section>
@@ -554,8 +596,8 @@
     ">
       <div style="font-weight:800;">🗂 Transaksi Tersimpan</div>
       <div style="display:flex; gap:8px;">
-        <button class="btn-outline" onclick="refreshHoldList()">↻ Refresh</button>
-        <button class="btn-outline" onclick="closeHoldModal()">Tutup</button>
+        <button class="btn-outline">↻ Refresh</button>
+        <button class="btn-outline">Tutup</button>
       </div>
     </div>
 
@@ -569,9 +611,10 @@
 </div>
 
 
-  <script src="index.js"></script>
+
+<script src="auth.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="index.js"></script>
+
 </body>
 </html>
-
-
-
