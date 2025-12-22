@@ -101,6 +101,14 @@ if (customerInput) {
    STATE
 ===================================================== */
 // ===== STATE =====
+let PRODUCT_SORT_MODE =
+  localStorage.getItem("product_sort_mode") || "best"; // best | latest | az
+
+let PRODUCT_VIEW_MODE =
+  localStorage.getItem("setting_product_view") || "normal";
+
+let BEST_SELLER_PERIOD = "90d"; // default 90 hari
+
 let page = 1;
 const pageSize = 25;
 let currentQuery = "";
@@ -297,23 +305,20 @@ function isOnline(){
   return navigator.onLine === true;
 }
 async function canReachSupabase(){
-  try{
-    const ctrl = new AbortController();
-    const t = setTimeout(()=>ctrl.abort(), 1500);
+  if (!navigator.onLine) return false;
 
-    // ping ringan ke supabase (kalau internet putus, akan throw)
-    await fetch("https://fpjfdxpdaqtopjorqood.supabase.co/rest/v1/", {
-      method: "HEAD",
-      mode: "no-cors",
-      signal: ctrl.signal
-    });
+  try {
+    const { error } = await sb
+      .from("master_items")
+      .select("item_id")
+      .limit(1);
 
-    clearTimeout(t);
-    return true;
-  }catch{
+    return !error;
+  } catch {
     return false;
   }
 }
+
 
 // ==============================
 // OFFLINE ORDER NO GENERATOR
@@ -832,12 +837,13 @@ function switchLeftTab(key){
     panelProduct.style.display = "flex";
     if (cartPanel) cartPanel.style.display = "flex";
   }
+if (key === "txn") {
+  panelTransactions.style.display = "flex";
+  if (cartPanel) cartPanel.style.display = "none";
+  initTxnFilterUI();
+  loadTransactions(true);
+}
 
-  if (key === "txn") {
-    panelTransactions.style.display = "flex";
-    if (cartPanel) cartPanel.style.display = "none";
-    loadTransactions(true);
-  }
 
   if (key === "set") {
   panelSettings.style.display = "flex";
@@ -857,6 +863,8 @@ if (key === "report") {
    LOAD PRODUCTS
 ===================================================== */
 async function loadProducts() {
+  // default sort
+  let sortMode = PRODUCT_SORT_MODE || localStorage.getItem("product_sort_mode") || "az";
 
   // ==========================
   // OFFLINE MODE → LOAD CACHE
@@ -888,6 +896,17 @@ async function loadProducts() {
 
     if (filters.hideEmpty) list = list.filter(p => p.available_qty > 0);
     if (filters.hideKtn) list = list.filter(p => !/ktn/i.test(p.item_name || ""));
+// ==========================
+// APPLY SORT (OFFLINE)
+// ==========================
+if (sortMode === "az") {
+  list.sort((a,b)=> String(a.item_name||"").localeCompare(String(b.item_name||""), "id"));
+} else if (sortMode === "latest") {
+  list.sort((a,b)=> Number(b.item_id||0) - Number(a.item_id||0));
+} else if (sortMode === "best") {
+  // offline tidak bisa ambil rank dari server, fallback A-Z
+  list.sort((a,b)=> String(a.item_name||"").localeCompare(String(b.item_name||""), "id"));
+}
 
     // hitung pagination lokal (offline)
 const total = list.length;
@@ -908,20 +927,80 @@ return;
   // ONLINE MODE → SUPABASE
   // ==========================
   let q = sb
-    .from("master_items")
-    .select("item_id,item_code,item_name,thumbnail,sell_price,barcode,available_qty",{ count:"exact" })
-    .order("item_name",{ascending:true});
+  .from("master_items")
+  .select("item_id,item_code,item_name,thumbnail,sell_price,barcode,available_qty",{ count:"exact" });
 
   if (currentQuery) {
     q = q.or(`item_name.ilike.%${currentQuery}%,item_code.ilike.%${currentQuery}%,barcode.ilike.%${currentQuery}%`);
   }
   if (filters.hideEmpty) q = q.gt("available_qty",0);
   if (filters.hideKtn) q = q.not("item_name","ilike","%ktn%");
+  // ==========================
+  // APPLY SORT (ONLINE)
+  // ==========================
+  if (sortMode === "az") {
+    q = q.order("item_name", { ascending: true });
+  } else if (sortMode === "latest") {
+    // kalau tidak punya kolom updated_at, pakai item_id sebagai pendekatan "terbaru"
+    q = q.order("item_id", { ascending: false });
+  } else {
+    // "best" ditangani setelah data diambil (sort manual pakai rankMap)
+    // agar aman tanpa FK join
+    q = q.order("item_name", { ascending: true }); // fallback biar stabil
+  }
 
   const from = (page-1)*pageSize;
   const to = from + pageSize - 1;
 
+   // ==========================
+  // BEST SELLER: sort manual
+  // ==========================
+  if (sortMode === "best") {
+    const rankMap = await loadBestSellerMap();
+
+    // Ambil "lebih banyak" dulu, baru sort, lalu slice untuk page
+    // (Karena kalau kita range dulu, sorting rank-nya jadi salah)
+    const { data: allData, error: e1 } = await q;
+
+
+    if (e1) { console.error("loadProducts error", e1); return; }
+
+    const list = (allData || []).slice();
+
+    list.sort((a,b)=>{
+  const ra = rankMap[a.item_code];
+  const rb = rankMap[b.item_code];
+
+  if (ra == null && rb == null) return 0;
+  if (ra == null) return 1;   // yang bukan best seller selalu di bawah
+  if (rb == null) return -1;
+
+  return ra - rb;
+});
+
+
+    const total = list.length;
+
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    if (page > pages) page = pages;
+
+    const start = (page - 1) * pageSize;
+    const slice = list.slice(start, start + pageSize);
+
+    renderProducts(slice);
+    updatePagination(total);
+    return;
+  }
+
+  // ==========================
+  // NON-BEST: normal range
+  // ==========================
   const { data, count, error } = await q.range(from,to);
+  if (error) { console.error("loadProducts error", error); return; }
+
+  renderProducts(data||[]);
+  updatePagination(count||0);
+
   if (error) {
     console.error("loadProducts error", error);
     return;
@@ -1115,6 +1194,31 @@ if(!isOnline() || !supabaseOK){
     CUSTOMER_LIST = loadCustomerCache();
   }
 }
+// ==========================
+// BEST SELLER MAP (90 HARI)
+// ==========================
+async function loadBestSellerMap() {
+  if (!isOnline()) return {};
+
+  const { data, error } = await sb
+  .from("product_best_sellers")       // ✅ BENAR
+  .select("item_code, rank_no")
+  .eq("period_key", BEST_SELLER_PERIOD || "90d");
+
+
+  if (error) {
+    console.error("loadBestSellerMap error", error);
+    return {};
+  }
+
+  const map = {};
+  (data || []).forEach(r => {
+    map[r.item_code] = r.rank_no;
+  });
+
+  return map;
+}
+
 
 
 /* =====================================================
@@ -1141,13 +1245,9 @@ else if (outOfStock && !requireStock) extraClass = " oos";
 
 card.className = "product-card" + extraClass;
 
-// klik hanya kalau:
-// - stok ada, atau
-// - stok 0 tapi requireStock OFF
 if (!outOfStock || !requireStock) {
   card.onclick = () => addToCart(p);
 }
-
 
 
     card.innerHTML=`
@@ -1162,9 +1262,13 @@ if (!outOfStock || !requireStock) {
 
         <div class="product-stock">Stok ${p.available_qty}</div>
       </div>`;
-    productGrid.appendChild(card);
+        productGrid.appendChild(card);
   });
+
+  // ✅ apply short / normal SETELAH render selesai
+  applyProductViewMode();
 }
+
 
 /* =====================================================
    CART LOGIC
@@ -1383,6 +1487,7 @@ function selectCustomer(contactId) {
 /* =====================================================
    PAGINATION & EVENT
 ===================================================== */
+
 function updatePagination(total){
   const pages=Math.max(1,Math.ceil(total/pageSize));
   pageInfo.textContent=`Hal ${page}/${pages}`;
@@ -2169,6 +2274,80 @@ window.addEventListener("afterprint", () => {
   const m = document.getElementById("receiptModal");
   if (m) m.style.display = "none";
 });
+function txnSetToday(){
+  const fromEl = document.getElementById("txnDateFrom");
+  const toEl   = document.getElementById("txnDateTo");
+  if(!fromEl || !toEl) return;
+
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  fromEl.value = todayStr;
+  toEl.value   = todayStr;
+
+  fromEl.dispatchEvent(new Event("change", { bubbles:true }));
+}
+
+function txnSetYesterday(){
+  const fromEl = document.getElementById("txnDateFrom");
+  const toEl   = document.getElementById("txnDateTo");
+  if(!fromEl || !toEl) return;
+
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  const yStr = `${yyyy}-${mm}-${dd}`;
+
+  fromEl.value = yStr;
+  toEl.value   = yStr;
+
+  fromEl.dispatchEvent(new Event("change", { bubbles:true }));
+}
+
+let TXN_FILTER_BOUND = false;
+
+function initTxnFilterUI(){
+  const fromEl   = document.getElementById("txnDateFrom");
+  const toEl     = document.getElementById("txnDateTo");
+  const filterEl = document.getElementById("txnCashierFilter");
+
+  if(!fromEl || !toEl || !filterEl) return;
+
+  // default: hari ini
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth()+1).padStart(2,"0");
+  const dd = String(today.getDate()).padStart(2,"0");
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  if (!fromEl.value) fromEl.value = todayStr;
+  if (!toEl.value)   toEl.value   = todayStr;
+
+  // default: kasir aktif saja (ingat pilihan)
+const saved = localStorage.getItem("txn_cashier_filter"); // "ALL" | "ACTIVE"
+filterEl.value = saved || "ACTIVE";
+if (!saved) localStorage.setItem("txn_cashier_filter", filterEl.value);
+
+
+
+  if(!TXN_FILTER_BOUND){
+    TXN_FILTER_BOUND = true;
+
+    fromEl.addEventListener("change", () => loadTransactions(true));
+    toEl.addEventListener("change", () => loadTransactions(true));
+    filterEl.addEventListener("change", () => {
+  localStorage.setItem("txn_cashier_filter", filterEl.value);
+  loadTransactions(true);
+});
+
+  }
+}
 
 /* =====================================================
    TRANSAKSI: LIST + DETAIL + REPRINT + REORDER
@@ -2299,10 +2478,32 @@ function txnNextPage(){
   loadTransactions(false);
 }
 
+
 // ==========================
 // OFFLINE MODE → LOCAL ONLY
 // ==========================
 async function loadTransactions(resetPage){
+// ===== FILTER TANGGAL TRANSAKSI =====
+const fromVal = document.getElementById("txnDateFrom")?.value || "";
+const toVal   = document.getElementById("txnDateTo")?.value || "";
+
+let startISO = null;
+let endISO   = null;
+
+if (fromVal && toVal) {
+  const start = new Date(fromVal + "T00:00:00");
+  const end   = new Date(toVal   + "T23:59:59");
+  startISO = start.toISOString();
+  endISO   = end.toISOString();
+}
+// ===== FILTER KASIR TRANSAKSI =====
+const cashierFilter =
+  document.getElementById("txnCashierFilter")?.value
+  || localStorage.getItem("txn_cashier_filter")
+  || "ACTIVE";
+
+const activeCashierId =
+  CASHIER_ID || localStorage.getItem("pos_cashier_id") || null;
   if (resetPage) TXN_PAGE = 1;
   // ✅ kalau terlihat online tapi server nggak bisa dijangkau → anggap OFFLINE
   const supabaseOK = await canReachSupabase();
@@ -2333,7 +2534,25 @@ async function loadTransactions(resetPage){
     const kw = ((txnSearchInput?.value || "").trim()).toLowerCase();
 
     let list = loadOfflineTransactions()
-      .filter(x => !CASHIER_ID || x.cashier_id === CASHIER_ID);
+  .filter(x => {
+    // filter tanggal
+    if (startISO && endISO) {
+      const t = new Date(x.created_at || 0).getTime();
+      if (
+        t < new Date(startISO).getTime() ||
+        t > new Date(endISO).getTime()
+      ) return false;
+    }
+
+    // filter kasir
+    if (cashierFilter === "ACTIVE" && activeCashierId) {
+      return x.cashier_id === activeCashierId;
+    }
+
+    return true; // ALL kasir
+  });
+
+
 
     if (kw) {
       list = list.filter(x => {
@@ -2360,9 +2579,15 @@ async function loadTransactions(resetPage){
     .from("pos_sales_orders")
     .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,is_paid", { count:"exact" })
     .order("transaction_date", { ascending:false });
-
-  // filter kasir aktif
-  if (CASHIER_ID) q = q.eq("cashier_id", CASHIER_ID);
+	// filter tanggal (from - to)
+if (startISO && endISO) {
+  q = q.gte("transaction_date", startISO)
+       .lte("transaction_date", endISO);
+}
+// filter kasir
+if (cashierFilter === "ACTIVE" && activeCashierId) {
+  q = q.eq("cashier_id", activeCashierId);
+}
 
   // search
   if (keyword) {
@@ -2721,6 +2946,96 @@ cart = items.map(i => ({
   panelProduct.style.display = "flex";
   btnNext.style.display = "block";
 }
+function applyProductViewMode(){
+  const grid = document.getElementById("productGrid");
+  const btn  = document.getElementById("btnShort");
+  if(!grid || !btn) return;
+
+  const isShort = PRODUCT_VIEW_MODE === "short";
+  grid.classList.toggle("short", isShort);
+  btn.classList.toggle("active", isShort);
+}
+
+function toggleProductShortMode(){
+  PRODUCT_VIEW_MODE =
+    (PRODUCT_VIEW_MODE === "short") ? "normal" : "short";
+
+  localStorage.setItem(
+    "setting_product_view",
+    PRODUCT_VIEW_MODE
+  );
+
+  applyProductViewMode();
+}
+function applySortUI(){
+  document.querySelectorAll(".sort-btn").forEach(btn => {
+    btn.classList.toggle(
+      "active",
+      btn.dataset.sort === PRODUCT_SORT_MODE
+    );
+  });
+}
+function applyBestPeriodUI(){
+  const box = document.getElementById("bestPeriodBox");
+  if (!box) return;
+
+  // tampil hanya saat mode "best"
+  box.style.display = (PRODUCT_SORT_MODE === "best") ? "flex" : "none";
+
+  // aktifkan tombol period yang sesuai
+  box.querySelectorAll(".period-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.period === BEST_SELLER_PERIOD);
+  });
+}
+
+function bindSortButtons(){
+  const btns = document.querySelectorAll(".sort-btn");
+  if (!btns.length) return;
+
+  btns.forEach(btn => {
+    btn.addEventListener("click", () => {
+
+      // set active UI
+      btns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+
+      // simpan mode
+      PRODUCT_SORT_MODE = btn.dataset.sort;
+      localStorage.setItem("product_sort_mode", PRODUCT_SORT_MODE);
+applySortUI();
+applyBestPeriodUI();
+
+      // reset halaman & reload
+      page = 1;
+      loadProducts();
+    });
+  });
+}
+function bindBestPeriodButtons(){
+  const box = document.getElementById("bestPeriodBox");
+  if (!box) return;
+
+  const btns = box.querySelectorAll(".period-btn");
+  if (!btns.length) return;
+
+  btns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      // set aktif UI
+      btns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+
+      // simpan period
+      BEST_SELLER_PERIOD = btn.dataset.period || "90d";
+
+      // (opsional) simpan ke localStorage biar inget
+      localStorage.setItem("best_seller_period", BEST_SELLER_PERIOD);
+
+      // reset halaman & reload
+      page = 1;
+      loadProducts();
+    });
+  });
+}
 
 /* =====================================================
    INIT
@@ -2740,6 +3055,25 @@ cart = items.map(i => ({
   loadSettings();
   loadFilterSettings();
   bindSettingsEvents();
+  const savedPeriod = localStorage.getItem("best_seller_period");
+if (savedPeriod) BEST_SELLER_PERIOD = savedPeriod;
+
+bindSortButtons();
+applySortUI();
+
+bindBestPeriodButtons();
+applyBestPeriodUI();
+
+
+    // ✅ SHORT MODE
+  const btnShort = document.getElementById("btnShort");
+  if (btnShort) {
+    btnShort.addEventListener("click", toggleProductShortMode);
+  }
+
+  // apply saat load
+  applyProductViewMode();
+
   updateSyncStatus(`Auto sync: tiap ${AUTO_SYNC_HOURS} jam`);
   initReportUI();
 
@@ -3352,3 +3686,84 @@ Object.entries(appliedObj).forEach(([k, amt]) => {
   //  }
   }
 }
+
+  const cashierButtons = document.querySelectorAll("#welcomeScreen .btn-cashier");
+  const cashierHandlers = [
+    "selectCashier('KSR-01','Rifqi')",
+    "selectCashier('KSR-02','Inan')",
+    "selectCashier('KSR-03','Imad')",
+    "selectCashier('KSR-04','Ahmad')"
+  ];
+  cashierButtons.forEach((btn, idx) => {
+    const handler = cashierHandlers[idx];
+    if (handler) btn.setAttribute("onclick", handler);
+  });
+
+  const btnSwitchCashier = document.getElementById("btnSwitchCashier");
+  if (btnSwitchCashier) btnSwitchCashier.setAttribute("onclick", "resetCashier()");
+
+  const tabSales = document.getElementById("tabSales");
+  if (tabSales) tabSales.setAttribute("onclick", "switchLeftTab(\'sales\')");
+  const tabTxn = document.getElementById("tabTxn");
+  if (tabTxn) tabTxn.setAttribute("onclick", "switchLeftTab(\'txn\')");
+  const tabSet = document.getElementById("tabSet");
+  if (tabSet) tabSet.setAttribute("onclick", "switchLeftTab(\'set\')");
+  const tabPrice = document.getElementById("tabPrice");
+  if (tabPrice) tabPrice.setAttribute("onclick", "openPriceCheck()");
+  const tabReport = document.getElementById("tabReport");
+  if (tabReport) tabReport.setAttribute("onclick", "switchLeftTab(\'report\')");
+
+  const logoutBtn = document.querySelector(".logout-btn");
+  if (logoutBtn) logoutBtn.setAttribute("onclick", "logout()");
+
+  const quickCashButtons = document.querySelectorAll("#quickCash .btn");
+  const quickCashHandlers = [
+    "setCash(calcTotal())",
+    "setCash(50000)",
+    "setCash(100000)"
+  ];
+  quickCashButtons.forEach((btn, idx) => {
+    const handler = quickCashHandlers[idx];
+    if (handler) btn.setAttribute("onclick", handler);
+  });
+	
+  if (btnFinishPayment) btnFinishPayment.setAttribute("onclick", "processPayment()");
+
+  const txnFilterButtons = document.querySelectorAll("#panel-transactions .txn-filter .btn-outline");
+  if (txnFilterButtons[0]) txnFilterButtons[0].setAttribute("onclick", "txnSetToday()");
+  if (txnFilterButtons[1]) txnFilterButtons[1].setAttribute("onclick", "txnSetYesterday()");
+
+  const txnSearchButtons = document.querySelectorAll("#panel-transactions .txn-toolbar button.btn");
+  txnSearchButtons.forEach(btn => btn.setAttribute("onclick", "loadTransactions(true)"));
+
+  const txnPagingButtons = document.querySelectorAll("#panel-transactions .txn-list button.btn");
+  if (txnPagingButtons[0]) txnPagingButtons[0].setAttribute("onclick", "txnPrevPage()");
+  if (txnPagingButtons[1]) txnPagingButtons[1].setAttribute("onclick", "txnNextPage()");
+
+  const txnActions = document.querySelectorAll("#txnDetailActions button");
+  if (txnActions[0]) txnActions[0].setAttribute("onclick", "txnReprint()");
+  if (txnActions[1]) txnActions[1].setAttribute("onclick", "txnSyncJubelio()");
+  if (txnActions[2]) txnActions[2].setAttribute("onclick", "txnReorder()");
+
+  const manualSyncButton = document.querySelector("#panel-settings .btn-primary");
+  if (manualSyncButton) manualSyncButton.setAttribute("onclick", "manualSyncProducts()");
+
+  const reportFilterButtons = document.querySelectorAll("#panel-report .btn-outline");
+  if (reportFilterButtons[0]) reportFilterButtons[0].setAttribute("onclick", "reportSetToday()");
+  if (reportFilterButtons[1]) reportFilterButtons[1].setAttribute("onclick", "reportSetYesterday()");
+
+  const holdButtons = document.querySelectorAll(".cart-header .btn-outline");
+  if (holdButtons[0]) holdButtons[0].setAttribute("onclick", "openHoldModal()");
+  if (holdButtons[1]) holdButtons[1].setAttribute("onclick", "parkCurrentOrder()");
+
+  const cartReset = document.querySelector(".cart-reset");
+  if (cartReset) cartReset.setAttribute("onclick", "resetCart()");
+
+  const backToEditBtn = document.querySelector(".cart-panel .btn-back");
+  if (backToEditBtn) backToEditBtn.setAttribute("onclick", "backToEdit()");
+
+  if (btnNext) btnNext.setAttribute("onclick", "goToPayment()");
+
+  const holdToolbarButtons = document.querySelectorAll("#holdModal .btn-outline");
+  if (holdToolbarButtons[0]) holdToolbarButtons[0].setAttribute("onclick", "refreshHoldList()");
+  if (holdToolbarButtons[1]) holdToolbarButtons[1].setAttribute("onclick", "closeHoldModal()");
