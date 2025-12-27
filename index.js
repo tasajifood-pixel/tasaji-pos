@@ -383,6 +383,72 @@ function updateSwitchCashierButton(){
 
 // ===== UTILITIES =====
 const formatRupiah = n => "Rp " + Number(n || 0).toLocaleString("id-ID");
+// ==============================
+// QUICK CASH (DINAMIS) - START 500
+// ==============================
+function roundUp(n, step){
+  const v = Number(n || 0);
+  const s = Number(step || 500);
+  return Math.ceil(v / s) * s;
+}
+
+function getQuickCashStep(total){
+  const t = Number(total || 0);
+
+  // start 500 (abaikan 100/200)
+  if (t < 10000) return 500;        // 0 - 9.999
+  if (t < 50000) return 5000;       // 10.000 - 49.999
+  return 10000;                     // >= 50.000 selalu step 10.000 (lebih kasir banget)
+}
+
+
+function buildQuickCashOptions(total){
+  const t = Number(total || 0);
+  if (t <= 0) return [];
+
+  const step = getQuickCashStep(t);
+
+  const A = roundUp(t, step);        // pembulatan terdekat di atas total
+  const B = A + step;                // +10k
+  const C = A + (2 * step);          // +20k
+
+  // Pecahan besar untuk "bayar gampang"
+  const bigChoices = [50000, 100000, 200000, 500000, 1000000, 2000000];
+  let D = bigChoices.find(x => x >= t) || (C + step);
+
+  // kalau D terlalu dekat (misalnya t=180k, D=200k, sama dgn C), naikkan 1 level lagi
+  if ([A, B, C].includes(D)) {
+    const idx = bigChoices.indexOf(D);
+    if (idx >= 0 && idx < bigChoices.length - 1) D = bigChoices[idx + 1];
+  }
+
+  return Array.from(new Set([A, B, C, D]));
+}
+
+function renderQuickCashButtons(){
+  const box = document.getElementById("quickCash");
+  if (!box) return;
+
+  const total = calcTotal();
+  const opts = buildQuickCashOptions(total);
+
+  // tombol selalu: Sama
+  let html = `
+    <button class="btn" type="button" onclick="setCash(calcTotal())">Sama</button>
+  `;
+
+  // tombol dinamis
+  opts.forEach(v => {
+    html += `
+      <button class="btn" type="button" onclick="setCash(${v})">
+        ${formatRupiah(v).replace("Rp ", "")}
+      </button>
+    `;
+  });
+
+  box.innerHTML = html;
+}
+
 
 function applyShiftX(mm){
   const v = Number(mm || 0);
@@ -832,11 +898,23 @@ function switchLeftTab(key){
 
   
 
+if (key === "sales") {
+  const isPaying = (panelPayment?.dataset?.active === "1");
 
-  if (key === "sales") {
+  // kalau sedang payment, jangan paksain balik ke produk
+  if (isPaying) {
+    panelPayment.style.display = "block";
+    panelProduct.style.display = "none";
+    if (btnNext) btnNext.style.display = "none";
+  } else {
     panelProduct.style.display = "flex";
-    if (cartPanel) cartPanel.style.display = "flex";
+    panelPayment.style.display = "none";
+    if (btnNext) btnNext.style.display = "block";
   }
+
+  if (cartPanel) cartPanel.style.display = "flex";
+}
+
 if (key === "txn") {
   panelTransactions.style.display = "flex";
   if (cartPanel) cartPanel.style.display = "none";
@@ -1338,7 +1416,7 @@ const dropdown = customerDropdown || document.getElementById("customerDropdown")
   if (dropdown) dropdown.style.display = "none";
 
   selectedPaymentMethod = null;
-  PAYMENT_LINES = [];
+  resetPaymentLines();
 
   localStorage.removeItem("pos_cart");
   localStorage.removeItem("pos_customer");
@@ -1536,6 +1614,11 @@ searchInput.addEventListener("keydown", async (e) => {
 /* =====================================================
    PAGE SWITCH: CASHIER <-> PAYMENT
 ===================================================== */
+// ✅ TAMBAHKAN INI (WAJIB ADA SEBELUM DIPAKAI)
+function resetPaymentLines(){
+  PAYMENT_LINES = [];
+}
+
 // ===== PAYMENT =====
 async function goToPayment() {
   if (!cart.length) {
@@ -1578,9 +1661,13 @@ async function goToPayment() {
   cashInput.value = "";
   changeOutput.textContent = formatRupiah(0);
 
-  if (quickCash) quickCash.style.display = "none";
+ if (quickCash) quickCash.style.display = "none";
+resetPaymentLines();
 
-  PAYMENT_LINES = [];
+// ✅ siapkan tombol quick cash sesuai total
+renderQuickCashButtons();
+
+
   cashInput.value = "";
   changeOutput.textContent = formatRupiah(0);
 
@@ -1673,22 +1760,19 @@ function recalcPaymentStatus(){
 }
 
 function upsertCashLine(amount){
-  const idx = PAYMENT_LINES.findIndex(x => x.method === "cash");
-  if(amount <= 0){
-    if(idx >= 0) PAYMENT_LINES.splice(idx,1);
+  // ✅ SINGLE PAYMENT MODE: hanya boleh 1 line
+  if (amount <= 0) {
+    PAYMENT_LINES = [];
     recalcPaymentStatus();
     return;
   }
 
-  if(idx >= 0){
-    PAYMENT_LINES[idx].amount = amount;
-  } else {
-    PAYMENT_LINES.unshift({
-      method:"cash",
-      label: methodLabel("cash"),
-      amount
-    });
-  }
+  PAYMENT_LINES = [{
+    method: "cash",
+    label: methodLabel("cash"),
+    amount: Number(amount || 0)
+  }];
+
   recalcPaymentStatus();
 }
 
@@ -1712,77 +1796,89 @@ function onCashInputChange(){
 
 function addNonCashLine(method){
   const total = calcTotal();
-  if(total <= 0){
+  if (total <= 0) {
     alert("Total masih Rp0. Cek data harga (PRICE_MAP).");
     return;
   }
 
-  const rem = remainingAmount();
-  if(rem <= 0) return;
-
-  PAYMENT_LINES.push({
+  // ✅ SINGLE PAYMENT MODE: non-cash selalu FULL TOTAL
+  PAYMENT_LINES = [{
     method,
     label: methodLabel(method),
-    amount: rem
-  });
+    amount: total
+  }];
 
   recalcPaymentStatus();
 }
-
 
 function removePayLine(idx){
-  const removed = PAYMENT_LINES[idx];
-  PAYMENT_LINES.splice(idx,1);
+  // ✅ SINGLE PAYMENT MODE: kalau dihapus → reset seluruh payment
+  PAYMENT_LINES = [];
 
-  if(removed?.method === "cash"){
+  // reset state metode
+  selectedPaymentMethod = null;
+
+  // reset UI metode (tombol aktif hilang)
+  document.querySelectorAll(".pay-method-btn")
+    .forEach(b => b.classList.remove("active"));
+
+  // reset input cash
+  if (cashInput) {
     cashInput.value = "";
+    cashInput.disabled = false;
+    cashInput.readOnly = false;
   }
+
+  // sembunyikan quick cash
+  if (quickCash) quickCash.style.display = "none";
+
+  // reset kembalian
+  if (changeOutput) changeOutput.textContent = formatRupiah(0);
 
   recalcPaymentStatus();
 }
 
-document.querySelectorAll(".pay-method-btn").forEach(btn => {
- btn.addEventListener("click", () => {
 
-  // 1️⃣ Reset semua payment sebelumnya
-  PAYMENT_LINES = [];
 
-  // 2️⃣ Reset UI cash
-  cashInput.value = "";
-  changeOutput.textContent = formatRupiah(0);
+function bindPaymentMethodButtons(){
+  document.querySelectorAll(".pay-method-btn").forEach(btn => {
+    if (btn.dataset.bound === "1") return;   // ✅ guard anti dobel bind
+    btn.dataset.bound = "1";
 
-  // 3️⃣ Set active button
-  document.querySelectorAll(".pay-method-btn")
-    .forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
+    btn.addEventListener("click", () => {
 
-  selectedPaymentMethod = btn.dataset.method;
+      resetPaymentLines();
 
-  // 4️⃣ Handle berdasarkan metode
-  if (selectedPaymentMethod === "cash") {
+      cashInput.value = "";
+      changeOutput.textContent = formatRupiah(0);
 
-    cashInput.disabled = false;
-    cashInput.readOnly = false;
-    cashInput.focus();
+      document.querySelectorAll(".pay-method-btn")
+        .forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
 
-    if (quickCash) quickCash.style.display = "flex";
+      selectedPaymentMethod = btn.dataset.method;
 
-  } else {
+      if (selectedPaymentMethod === "cash") {
+  cashInput.disabled = false;
+  cashInput.readOnly = false;
+  cashInput.focus();
 
-    cashInput.disabled = true;
-    cashInput.readOnly = true;
+  // ✅ refresh tombol quick cash sesuai total terbaru
+  renderQuickCashButtons();
 
-    if (quickCash) quickCash.style.display = "none";
+  if (quickCash) quickCash.style.display = "flex";
+} else {
 
-    // ⬅️ langsung lunasi sisa dengan metode non-cash
-    addNonCashLine(selectedPaymentMethod);
-  }
+        cashInput.disabled = true;
+        cashInput.readOnly = true;
+        if (quickCash) quickCash.style.display = "none";
+        addNonCashLine(selectedPaymentMethod);
+      }
 
-  // 5️⃣ Refresh status pembayaran
-  recalcPaymentStatus();
-});
-
-});
+      recalcPaymentStatus();
+    });
+  });
+}
 
 async function processPayment() {
   // ==============================
@@ -1890,13 +1986,22 @@ resetAll();
 }
 
 function backToEdit() {
+  resetPaymentLines();
+  selectedPaymentMethod = null;
+
+  document.querySelectorAll(".pay-method-btn")
+    .forEach(b => b.classList.remove("active"));
+
   setActiveTabBtn("sales");
   panelPayment.style.display = "none";
   panelProduct.style.display = "flex";
-  btnNext.style.display = "block";
-  panelPayment.dataset.active = "0";
 
+  // ✅ INI PENTING
+  btnNext.style.display = "block";
+
+  panelPayment.dataset.active = "0";
 }
+
 
 async function saveJubelioPayloadToOrder(salesorderNo, payloadObj){
   const { error } = await sb
@@ -3091,9 +3196,8 @@ applyBestPeriodUI();
 
   updateSyncStatus(`Auto sync: tiap ${AUTO_SYNC_HOURS} jam`);
   initReportUI();
-
-
-
+bindPaymentMethodButtons();
+	
   // 4️⃣ master data
   await loadPriceMap();
   await loadPackingMap();
