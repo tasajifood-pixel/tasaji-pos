@@ -63,6 +63,8 @@ const btnFinishPayment = document.getElementById("btnFinishPayment");
 
 const txnSearchInput = document.getElementById("txnSearchInput");
 const txnList = document.getElementById("txnList");
+const txnPayFilter = document.getElementById("txnPayFilter");
+
 const txnDetailTitle = document.getElementById("txnDetailTitle");
 const txnDetailSub = document.getElementById("txnDetailSub");
 const txnDetailBody = document.getElementById("txnDetailBody");
@@ -85,8 +87,6 @@ const setAutoSyncHours = document.getElementById("setAutoSyncHours");
 
 
 
-/* event input cash */
-cashInput.addEventListener("input", onCashInputChange);
 // customer autocomplete
 if (customerInput) {
   customerInput.addEventListener("input", searchCustomer);
@@ -95,6 +95,12 @@ if (customerInput) {
     // kalau ada isi, tampilkan lagi hasil
     if (customerInput.value.trim()) searchCustomer();
   });
+}
+// ✅ bind input cash agar ketik angka langsung jadi payment line
+if (cashInput && !cashInput.dataset.boundInput) {
+  cashInput.dataset.boundInput = "1";
+  cashInput.addEventListener("input", onCashInputChange);
+  cashInput.addEventListener("change", onCashInputChange);
 }
 
 /* =====================================================
@@ -790,7 +796,7 @@ if (setNote2) setNote2.value = STORE_NOTE_2 || "";
 const sAutoSync = localStorage.getItem("setting_autoSyncHours");
 if (sAutoSync) AUTO_SYNC_HOURS = Number(sAutoSync) || 3;
 
-const setAuto = document.getElementById("setAutoSyncHours");
+
 if (setAutoSyncHours) setAutoSyncHours.value = AUTO_SYNC_HOURS;
 
 }
@@ -908,7 +914,7 @@ function showLeftPanel(panelKey){
     // kalau lagi payment, tetap payment (biar gak bingung)
    if(panelKey === "sales"){
   const isPaying = (document.getElementById("panel-payment")?.dataset?.active === "1");
-  if (isPaying) panelPayment.style.display = "block";
+  if (isPaying) panelPayment.style.display = "flex";
   else panelProduct.style.display = "flex";
 }
 
@@ -938,7 +944,7 @@ if (key === "sales") {
 
   // kalau sedang payment, jangan paksain balik ke produk
   if (isPaying) {
-    panelPayment.style.display = "block";
+    panelPayment.style.display = "flex";
     panelProduct.style.display = "none";
     if (btnNext) btnNext.style.display = "none";
   } else {
@@ -1843,7 +1849,7 @@ async function goToPayment() {
   setActiveTabBtn("sales");
 
   panelProduct.style.display = "none";
-  panelPayment.style.display = "block";
+  panelPayment.style.display = "flex";
   panelPayment.dataset.active = "1";
   panelTransactions.style.display = "none";
   panelSettings.style.display = "none";
@@ -1879,21 +1885,67 @@ function methodLabel(method){
     debit_bca: "Debit BCA",
     debit_mandiri: "Debit Mandiri",
     qris_gopay: "QRIS GoPay",
-    transfer_bca: "Transfer BCA"
+    transfer_bca: "Transfer BCA",
+    piutang: "Piutang"
   };
   return map[method] || method;
 }
+
 
 function formatLineAmount(n){
   return "Rp" + Number(n||0).toLocaleString("id-ID") + ",00";
 }
 
-function totalPaid(){
-  return PAYMENT_LINES.reduce((s,x)=>s + (Number(x.amount)||0), 0);
+
+function upsertPayLine(method, amount){
+  amount = Number(amount || 0);
+
+  // kalau amount <=0 -> hapus line method tsb
+  if (amount <= 0) {
+    PAYMENT_LINES = PAYMENT_LINES.filter(x => x.method !== method);
+    return;
+  }
+
+  const idx = PAYMENT_LINES.findIndex(x => x.method === method);
+
+  // kalau belum ada line dan sudah 3 -> stop
+  if (idx === -1 && PAYMENT_LINES.length >= 3) {
+    alert("Maksimal 3 metode pembayaran.");
+    return;
+  }
+
+  if (idx >= 0) {
+    PAYMENT_LINES[idx].amount = amount;
+  } else {
+    PAYMENT_LINES.push({
+      method,
+      label: methodLabel(method),
+      amount
+    });
+  }
 }
 
+
+/* =========================
+   PAYMENT HELPERS (FINAL)
+========================= */
+
+// total yang benar-benar dibayar (cash + noncash), piutang TIDAK dihitung bayar
+function totalPaidOnly(){
+  return PAYMENT_LINES
+    .filter(x => x.method !== "piutang")
+    .reduce((s,x)=> s + (Number(x.amount)||0), 0);
+}
+
+// sisa yang masih harus dibayar (tanpa memperhitungkan piutang)
+function remainingToPay(){
+  const rem = calcTotal() - totalPaidOnly();
+  return rem > 0 ? rem : 0;
+}
+
+// kompatibilitas jika ada kode lama yg manggil remainingAmount()
 function remainingAmount(){
-  return calcTotal() - totalPaid();
+  return remainingToPay();
 }
 
 function renderPaymentLines(){
@@ -1935,19 +1987,38 @@ function renderPaymentLines(){
 }
 
 function recalcPaymentStatus(){
+  // ✅ kalau piutang ada, nilainya harus selalu = sisa yang belum dibayar
+  const idxP = PAYMENT_LINES.findIndex(x => x.method === "piutang");
+  if (idxP >= 0) {
+    const unpaid = remainingToPay();
+    if (unpaid <= 0) {
+      // kalau sudah lunas, piutang tidak relevan -> hapus
+      PAYMENT_LINES.splice(idxP, 1);
+    } else {
+      PAYMENT_LINES[idxP].amount = unpaid;
+      PAYMENT_LINES[idxP].label = methodLabel("piutang");
+    }
+  }
+
   renderPaymentLines();
 
   const total = calcTotal();
-  const paid = totalPaid();
-  const rem = total - paid;
+  const paid = totalPaidOnly();
 
+  // change hanya jika ada CASH dan paid > total (tanpa piutang)
   const hasCash = PAYMENT_LINES.some(x => x.method === "cash");
   const change = (hasCash && paid > total) ? (paid - total) : 0;
   changeOutput.textContent = formatRupiah(change);
 
-  const isLunas = rem <= 0 && PAYMENT_LINES.length > 0;
+  const hasAnyLine = PAYMENT_LINES.length > 0;
+  const hasPiutang = PAYMENT_LINES.some(x => x.method === "piutang");
 
-  if(isLunas){
+  // ✅ boleh selesai jika:
+  // - sudah lunas (paid >= total), ATAU
+  // - ada piutang (artinya sisa dicatat piutang)
+  const isOk = hasAnyLine && (paid >= total || hasPiutang);
+
+  if(isOk){
     btnFinishPayment.classList.remove("disabled");
     btnFinishPayment.classList.add("active");
     btnFinishPayment.disabled = false;
@@ -1958,22 +2029,21 @@ function recalcPaymentStatus(){
   }
 }
 
+
 function upsertCashLine(amount){
-  // ✅ SINGLE PAYMENT MODE: hanya boleh 1 line
-  if (amount <= 0) {
-    PAYMENT_LINES = [];
-    recalcPaymentStatus();
+  amount = Number(amount || 0);
+
+  // kalau mau tambah cash line baru tapi sudah 3 line -> stop
+  const hasCash = PAYMENT_LINES.some(x => x.method === "cash");
+  if (!hasCash && PAYMENT_LINES.length >= 3 && amount > 0) {
+    alert("Maksimal 3 metode pembayaran.");
     return;
   }
 
-  PAYMENT_LINES = [{
-    method: "cash",
-    label: methodLabel("cash"),
-    amount: Number(amount || 0)
-  }];
-
+  upsertPayLine("cash", amount);
   recalcPaymentStatus();
 }
+
 
 function setCash(amount) {
   selectedPaymentMethod = "cash";
@@ -2000,57 +2070,68 @@ function addNonCashLine(method){
     return;
   }
 
-  // ✅ SINGLE PAYMENT MODE: non-cash selalu FULL TOTAL
-  PAYMENT_LINES = [{
-    method,
-    label: methodLabel(method),
-    amount: total
-  }];
+  const rem = remainingToPay();
+  if (rem <= 0) {
+    alert("Sudah lunas. Tidak perlu tambah metode lagi.");
+    return;
+  }
 
+  // kalau method belum ada dan sudah 3 line -> stop
+  const exists = PAYMENT_LINES.some(x => x.method === method);
+  if (!exists && PAYMENT_LINES.length >= 3) {
+    alert("Maksimal 3 metode pembayaran.");
+    return;
+  }
+
+  // ✅ biar bisa partial, kita tanya nominal (default = sisa)
+  const raw = prompt(`Nominal untuk ${methodLabel(method)}:`, String(rem));
+  if (raw === null) return;
+
+  const amt = Number(String(raw).replace(/[^\d]/g, "")) || 0;
+  if (amt <= 0) {
+    alert("Nominal harus > 0");
+    return;
+  }
+  if (amt > rem) {
+    alert("Nominal tidak boleh lebih besar dari sisa yang harus dibayar.");
+    return;
+  }
+
+  upsertPayLine(method, amt);
   recalcPaymentStatus();
 }
 
 function removePayLine(idx){
-  // ✅ SINGLE PAYMENT MODE: kalau dihapus → reset seluruh payment
-  PAYMENT_LINES = [];
+  if (idx < 0 || idx >= PAYMENT_LINES.length) return;
 
-  // reset state metode
-  selectedPaymentMethod = null;
+  const removed = PAYMENT_LINES[idx];
+  PAYMENT_LINES.splice(idx, 1);
 
-  // reset UI metode (tombol aktif hilang)
-  document.querySelectorAll(".pay-method-btn")
-    .forEach(b => b.classList.remove("active"));
-
-  // reset input cash
-  if (cashInput) {
+  // kalau yang dihapus cash, reset input cash
+  if (removed?.method === "cash" && cashInput) {
     cashInput.value = "";
     cashInput.disabled = false;
     cashInput.readOnly = false;
   }
 
-  // sembunyikan quick cash
-  if (quickCash) quickCash.style.display = "none";
-
-  // reset kembalian
-  if (changeOutput) changeOutput.textContent = formatRupiah(0);
+  // kalau sudah tidak ada line cash, sembunyikan quick cash kecuali mode cash dipilih
+  const hasCash = PAYMENT_LINES.some(x => x.method === "cash");
+  if (!hasCash && selectedPaymentMethod !== "cash") {
+    if (quickCash) quickCash.style.display = "none";
+  }
 
   recalcPaymentStatus();
 }
 
 
-
 function bindPaymentMethodButtons(){
   document.querySelectorAll(".pay-method-btn").forEach(btn => {
-    if (btn.dataset.bound === "1") return;   // ✅ guard anti dobel bind
+    if (btn.dataset.bound === "1") return;
     btn.dataset.bound = "1";
 
     btn.addEventListener("click", () => {
 
-      resetPaymentLines();
-
-      cashInput.value = "";
-      changeOutput.textContent = formatRupiah(0);
-
+      // aktifkan tombol UI (active)
       document.querySelectorAll(".pay-method-btn")
         .forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
@@ -2058,26 +2139,68 @@ function bindPaymentMethodButtons(){
       selectedPaymentMethod = btn.dataset.method;
 
       if (selectedPaymentMethod === "cash") {
-  cashInput.disabled = false;
-  cashInput.readOnly = false;
-  cashInput.focus();
 
-  // ✅ refresh tombol quick cash sesuai total terbaru
-  renderQuickCashButtons();
+        // CASH: jangan hapus line lain, hanya aktifkan input cash
+        const cashLine = PAYMENT_LINES.find(x => x.method === "cash");
 
-  if (quickCash) quickCash.style.display = "flex";
-} else {
+        if (cashInput) {
+          cashInput.disabled = false;
+          cashInput.readOnly = false;
+          cashInput.value = cashLine ? String(cashLine.amount || "") : "";
+          cashInput.focus();
+        }
 
-        cashInput.disabled = true;
-        cashInput.readOnly = true;
-        if (quickCash) quickCash.style.display = "none";
-        addNonCashLine(selectedPaymentMethod);
+        renderQuickCashButtons();
+        if (quickCash) quickCash.style.display = "flex";
+
+        // kalau belum ada line cash, biarkan belum ada sampai user input / quickcash
+        recalcPaymentStatus();
+        return;
+
       }
 
-      recalcPaymentStatus();
+      if (selectedPaymentMethod === "piutang") {
+
+        // PIUTANG: tambah/ubah piutang = sisa yang belum dibayar
+        if (cashInput) {
+          cashInput.value = "";
+          cashInput.disabled = true;
+          cashInput.readOnly = true;
+        }
+        if (quickCash) quickCash.style.display = "none";
+
+        const rem = remainingToPay();
+        if (rem <= 0) {
+          alert("Sudah lunas, piutang tidak diperlukan.");
+          recalcPaymentStatus();
+          return;
+        }
+
+        // enforce max 3 line kalau piutang belum ada
+        const exists = PAYMENT_LINES.some(x => x.method === "piutang");
+        if (!exists && PAYMENT_LINES.length >= 3) {
+          alert("Maksimal 3 metode pembayaran.");
+          return;
+        }
+
+        upsertPayLine("piutang", rem);
+        recalcPaymentStatus();
+        return;
+      }
+
+      // NON-CASH: tambah line dengan nominal (prompt, default sisa)
+      if (cashInput) {
+        cashInput.disabled = true;
+        cashInput.readOnly = true;
+        cashInput.value = "";
+      }
+      if (quickCash) quickCash.style.display = "none";
+
+      addNonCashLine(selectedPaymentMethod);
     });
   });
 }
+
 
 async function processPayment() {
   // ==============================
@@ -2387,7 +2510,7 @@ async function saveSalesOrderHeader() {
     payment_method: PAYMENT_LINES.map(p => p.label).join(", "),
     location_id: -1,
     store_id: -100,
-    is_paid: true,
+    is_paid: !PAYMENT_LINES.some(p => p.method === "piutang"),
 
 // ✅ status sync Jubelio (queue)
 jubelio_synced: false,
@@ -2635,8 +2758,10 @@ function initTxnFilterUI(){
   const fromEl   = document.getElementById("txnDateFrom");
   const toEl     = document.getElementById("txnDateTo");
   const filterEl = document.getElementById("txnCashierFilter");
+  const payEl    = document.getElementById("txnPayFilter");
 
   if(!fromEl || !toEl || !filterEl) return;
+
 
   // default: hari ini
   const today = new Date();
@@ -2652,20 +2777,33 @@ function initTxnFilterUI(){
 const saved = localStorage.getItem("txn_cashier_filter"); // "ALL" | "ACTIVE"
 filterEl.value = saved || "ACTIVE";
 if (!saved) localStorage.setItem("txn_cashier_filter", filterEl.value);
+// default: metode pembayaran (ingat pilihan)
+const savedPay = localStorage.getItem("txn_pay_filter"); // "ALL" | "Cash" | "QRIS" | ...
+if (payEl) {
+  payEl.value = savedPay || "ALL";
+  if (!savedPay) localStorage.setItem("txn_pay_filter", payEl.value);
+}
 
 
 
-  if(!TXN_FILTER_BOUND){
-    TXN_FILTER_BOUND = true;
+ if(!TXN_FILTER_BOUND){
+  TXN_FILTER_BOUND = true;
 
-    fromEl.addEventListener("change", () => loadTransactions(true));
-    toEl.addEventListener("change", () => loadTransactions(true));
-    filterEl.addEventListener("change", () => {
-  localStorage.setItem("txn_cashier_filter", filterEl.value);
-  loadTransactions(true);
-});
+  fromEl.addEventListener("change", () => loadTransactions(true));
+  toEl.addEventListener("change", () => loadTransactions(true));
 
+  filterEl.addEventListener("change", () => {
+    localStorage.setItem("txn_cashier_filter", filterEl.value);
+    loadTransactions(true);
+  });
+
+  if (payEl) {
+    payEl.addEventListener("change", () => {
+      localStorage.setItem("txn_pay_filter", payEl.value);
+      loadTransactions(true);
+    });
   }
+}
 }
 
 /* =====================================================
@@ -2820,6 +2958,10 @@ const cashierFilter =
   document.getElementById("txnCashierFilter")?.value
   || localStorage.getItem("txn_cashier_filter")
   || "ACTIVE";
+const payFilter =
+  document.getElementById("txnPayFilter")?.value
+  || localStorage.getItem("txn_pay_filter")
+  || "ALL";
 
 const activeCashierId =
   CASHIER_ID || localStorage.getItem("pos_cashier_id") || null;
@@ -2852,7 +2994,7 @@ const activeCashierId =
   if (!isOnline()) {
     const kw = ((txnSearchInput?.value || "").trim()).toLowerCase();
 
-    let list = loadOfflineTransactions()
+   let list = loadOfflineTransactions()
   .filter(x => {
     // filter tanggal
     if (startISO && endISO) {
@@ -2865,11 +3007,15 @@ const activeCashierId =
 
     // filter kasir
     if (cashierFilter === "ACTIVE" && activeCashierId) {
-      return x.cashier_id === activeCashierId;
+      if (x.cashier_id !== activeCashierId) return false;
     }
+
+    // ✅ filter metode pembayaran (OFFLINE)
+    if (!txnPayFilterMatchOffline(x.payments, payFilter)) return false;
 
     return true; // ALL kasir
   });
+
 
 
 
@@ -2894,10 +3040,11 @@ const activeCashierId =
   const from = (TXN_PAGE-1) * TXN_PAGE_SIZE;
   const to = from + TXN_PAGE_SIZE - 1;
 
-  let q = sb
-    .from("pos_sales_orders")
-    .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,is_paid", { count:"exact" })
-    .order("transaction_date", { ascending:false });
+ let q = sb
+  .from("pos_sales_orders")
+  .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,is_paid,payment_method", { count:"exact" })
+  .order("transaction_date", { ascending:false });
+
 	// filter tanggal (from - to)
 if (startISO && endISO) {
   q = q.gte("transaction_date", startISO)
@@ -2906,6 +3053,12 @@ if (startISO && endISO) {
 // filter kasir
 if (cashierFilter === "ACTIVE" && activeCashierId) {
   q = q.eq("cashier_id", activeCashierId);
+}
+// ✅ filter metode pembayaran (ONLINE)
+const like = txnPayFilterToIlike(payFilter);
+if (like) {
+  // payment_method di header itu string gabungan, jadi pakai ilike
+  q = q.ilike("payment_method", like);
 }
 
   // search
@@ -3648,9 +3801,34 @@ function normPayKey(label){
   // TRANSFER
   if (t.includes("transfer bca")) return "Transfer BCA";
   if (t.includes("transfer mandiri")) return "Transfer Mandiri";
+  // PIUTANG
+  if (t.includes("piutang")) return "Piutang";
 
   return "Lainnya";
 }
+function txnPayFilterMatchOffline(payments, selectedKey){
+  if (!selectedKey || selectedKey === "ALL") return true;
+  const list = payments || [];
+  return list.some(p => normPayKey(p.label || p.payment_method) === selectedKey);
+}
+
+// untuk ONLINE: payment_method di header adalah gabungan label, contoh: "Kas, QRIS GoPay"
+function txnPayFilterToIlike(selectedKey){
+  const k = String(selectedKey || "").toLowerCase();
+  if (!k || k === "all") return null;
+
+  // pola yang paling aman sesuai label yang kamu simpan
+  if (k === "cash") return "%kas%";                // "Kas"
+  if (k === "qris") return "%qris%";               // "QRIS GoPay"
+  if (k === "debit bca") return "%debit bca%";
+  if (k === "debit mandiri") return "%debit mandiri%";
+  if (k === "transfer bca") return "%transfer bca%";
+  if (k === "transfer mandiri") return "%transfer mandiri%";
+  if (k === "piutang") return "%piutang%";
+
+  return `%${selectedKey}%`;
+}
+
 function makeSummaryCards({ trxCount, omzet, payMap }) {
   const box = document.getElementById("reportSummary");
   if (!box) return;
@@ -3662,6 +3840,8 @@ function makeSummaryCards({ trxCount, omzet, payMap }) {
     { key: "Debit Mandiri", label: "Debit Mandiri" },
     { key: "Transfer BCA", label: "Transfer BCA" },
     { key: "Transfer Mandiri", label: "Transfer Mandiri" },
+	{ key: "Piutang", label: "Piutang" },
+
   ];
 
   // susun kartu
@@ -3744,6 +3924,8 @@ function renderByCashier(rows){
         <div class="rpt-right">Debit Mandiri</div>
         <div class="rpt-right">Transfer BCA</div>
         <div class="rpt-right">Transfer Mandiri</div>
+		<div class="rpt-right">Piutang</div>
+
         <div class="rpt-right">Total Omzet</div>
       </div>
 
@@ -3762,6 +3944,8 @@ function renderByCashier(rows){
           <div class="rpt-right">${fmt(r.debit_mandiri)}</div>
           <div class="rpt-right">${fmt(r.transfer_bca)}</div>
           <div class="rpt-right">${fmt(r.transfer_mandiri)}</div>
+		  <div class="rpt-right">${fmt(r.piutang)}</div>
+
 
           <div class="rpt-right"><b>${formatRupiah(r.omzet || 0)}</b></div>
         </div>
@@ -3784,8 +3968,14 @@ function computeAppliedPayment(total, payList){
     const k = normPayKey(x.label);
     sumByKey[k] = (sumByKey[k] || 0) + x.amount;
 
-    if (k === "Cash") sumCash += x.amount;
-    else sumNonCash += x.amount;
+        if (k === "Cash") {
+      sumCash += x.amount;
+    } else if (k === "Piutang") {
+      // ✅ piutang bukan pembayaran, jangan masuk sumNonCash
+    } else {
+      sumNonCash += x.amount;
+    }
+
   }
 
   const remainingForCash = Math.max(0, Number(total || 0) - sumNonCash);
@@ -3845,31 +4035,36 @@ async function loadReport(forceRefresh){
     const byCashier = {};
 
     function bumpCashier(cashier_id, cashier_name, add){
-      const id = cashier_id || "UNKNOWN";
-      if(!byCashier[id]){
-        byCashier[id] = {
-          cashier_id: id,
-          cashier_name: cashier_name || "UNKNOWN",
-          trxCount: 0,
-          omzet: 0,
-          cash: 0,
-          qris: 0,
-          debit_bca: 0,
-          debit_mandiri: 0,
-          transfer_bca: 0,
-          transfer_mandiri: 0
-        };
-      }
-      const x = byCashier[id];
-      x.trxCount += (add.trxCount||0);
-      x.omzet += (add.omzet||0);
-      x.cash += (add.cash||0);
-      x.qris += (add.qris||0);
-      x.debit_bca += (add.debit_bca||0);
-      x.debit_mandiri += (add.debit_mandiri||0);
-      x.transfer_bca += (add.transfer_bca||0);
-      x.transfer_mandiri += (add.transfer_mandiri||0);
-    }
+  const id = cashier_id || "UNKNOWN";
+
+  if (!byCashier[id]) {
+    byCashier[id] = {
+      cashier_id: id,
+      cashier_name: cashier_name || "UNKNOWN",
+      trxCount: 0,
+      omzet: 0,
+      cash: 0,
+      qris: 0,
+      debit_bca: 0,
+      debit_mandiri: 0,
+      transfer_bca: 0,
+      transfer_mandiri: 0,
+      piutang: 0
+    };
+  }
+
+  const x = byCashier[id];
+  x.trxCount += (add.trxCount || 0);
+  x.omzet += (add.omzet || 0);
+  x.cash += (add.cash || 0);
+  x.qris += (add.qris || 0);
+  x.debit_bca += (add.debit_bca || 0);
+  x.debit_mandiri += (add.debit_mandiri || 0);
+  x.transfer_bca += (add.transfer_bca || 0);
+  x.transfer_mandiri += (add.transfer_mandiri || 0);
+  x.piutang += (add.piutang || 0);
+}
+
 
     // ====== OFFLINE ======
     const offlineList = loadOfflineTransactions();
@@ -3905,7 +4100,10 @@ Object.entries(appliedObj).forEach(([k, amt]) => {
   debit_bca: Number(appliedObj["Debit BCA"] || 0),
   debit_mandiri: Number(appliedObj["Debit Mandiri"] || 0),
   transfer_bca: Number(appliedObj["Transfer BCA"] || 0),
-  transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0)
+  transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0),
+piutang: Number(appliedObj["Piutang"] || 0)
+
+
 });
 
     }
@@ -3975,7 +4173,9 @@ Object.entries(appliedObj).forEach(([k, amt]) => {
     debit_bca: Number(appliedObj["Debit BCA"] || 0),
     debit_mandiri: Number(appliedObj["Debit Mandiri"] || 0),
     transfer_bca: Number(appliedObj["Transfer BCA"] || 0),
-    transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0)
+    transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0),
+	piutang: Number(appliedObj["Piutang"] || 0)
+
   });
 });
 
