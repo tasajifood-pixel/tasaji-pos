@@ -22,7 +22,170 @@ const sb = window.supabase.createClient(
   "https://fpjfdxpdaqtopjorqood.supabase.co",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZwamZkeHBkYXF0b3Bqb3Jxb29kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NjU2NDUsImV4cCI6MjA3NjU0MTY0NX0.7cSIF32p9SHaHHlUcMFrrQSq7JBOdP4LneEvcMRrtXU"
 );
+
+
+/* =====================================================
+   CASHIER (Supabase-driven)
+   - List kasir di welcomeScreen diambil dari Supabase (table: pos_cashiers).
+   Expected columns:
+     - cashier_id   (text)  contoh: "KSR-01"
+     - cashier_name (text)
+     - is_active    (bool)
+     - sort_order   (int)
+===================================================== */
+
+const CASHIER_TABLE = "pos_cashiers";
+
+function removeSwitchCashierUI(){
+  const btn = document.getElementById("btnSwitchCashier");
+  if (btn) btn.remove();
+}
+
+function parseKasirNo(cashier_id){
+  const s = String(cashier_id || "");
+  // ambil angka terakhir: KSR-01 -> 01
+  const m = s.match(/(\d+)\s*$/) || s.match(/(\d+)/);
+  return m ? String(m[1]).padStart(2, "0") : "";
+}
+
+function makeCashierButtonText(c){
+  const id = c?.cashier_id || "";
+  const name = c?.cashier_name || "";
+  const no = parseKasirNo(id);
+  const kasirLabel = no ? `Kasir ${no}` : id;
+  return `${name} — ${kasirLabel}`.trim();
+}
+
+function getCachedCashiers(){
+  try {
+    const raw = localStorage.getItem("pos_cashiers_cache");
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return Array.isArray(obj?.data) ? obj.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCashiersFromSupabase(){
+  if (!navigator.onLine) return null;
+
+  try {
+    const { data, error } = await sb
+      .from(CASHIER_TABLE)
+      .select("cashier_id,cashier_name,is_active,sort_order")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true });
+
+    if (error) throw error;
+
+    if (Array.isArray(data)) {
+      localStorage.setItem("pos_cashiers_cache", JSON.stringify({ ts: Date.now(), data }));
+    }
+
+    return data || null;
+  } catch (e) {
+    console.warn("fetchCashiersFromSupabase gagal:", e);
+    return null;
+  }
+}
+
+function renderCashierButtons(cashiers){
+  const wrap = document.getElementById("welcomeScreen");
+  if (!wrap) return;
+
+  // cari container yang paling cocok untuk taruh tombol
+  let listBox =
+    wrap.querySelector(".cashier-list") ||
+    wrap.querySelector(".cashier-buttons") ||
+    wrap;
+
+  let btns = Array.from(listBox.querySelectorAll(".btn-cashier"));
+
+  // kalau belum ada tombol sama sekali, buat container sederhana
+  if (btns.length === 0) {
+    const box = document.createElement("div");
+    box.className = "cashier-list";
+    box.style.display = "flex";
+    box.style.flexDirection = "column";
+    box.style.gap = "16px";
+    listBox.appendChild(box);
+    listBox = box;
+    btns = [];
+  }
+
+  // pastikan jumlah tombol cukup
+  while (btns.length < cashiers.length) {
+    const b = document.createElement("button");
+    b.className = "btn-cashier";
+    listBox.appendChild(b);
+    btns.push(b);
+  }
+
+  // isi tombol sesuai data kasir
+  btns.forEach((b, i) => {
+    const c = cashiers[i];
+    if (!c) {
+      b.style.display = "none";
+      b.onclick = null;
+      return;
+    }
+    b.style.display = "";
+    b.textContent = makeCashierButtonText(c);
+    b.onclick = () => selectCashier(c.cashier_id, c.cashier_name);
+  });
+}
+
+async function loadAndRenderCashiers(){
+  let cashiers = await fetchCashiersFromSupabase();
+  if (!cashiers || !cashiers.length) cashiers = getCachedCashiers() || [];
+
+  // jangan fallback hardcode lagi (biar benar-benar fokus Supabase)
+  if (!cashiers.length) {
+    console.warn("Cashier list kosong. Pastikan table pos_cashiers terisi (minimal 1 kasir aktif).");
+    return;
+  }
+
+  renderCashierButtons(cashiers);
+}
+
 	
+// ===============================
+// CANCEL CACHE (READ FROM DB)
+// ===============================
+
+
+function toISOStart(dateStr) {
+  return new Date(dateStr + "T00:00:00").toISOString();
+}
+
+function toISOEnd(dateStr) {
+  return new Date(dateStr + "T23:59:59").toISOString();
+}
+
+async function fetchCanceledOrdersByISO(startISO, endISO) {
+  try {
+    let q = sb
+      .from("pos_canceled_orders")
+      .select("salesorder_no");
+
+    if (startISO && endISO) {
+      q = q.gte("created_at", startISO).lte("created_at", endISO);
+    }
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    canceledOrdersSet = new Set((data || []).map(r => r.salesorder_no));
+    console.log("✅ canceledOrders loaded:", canceledOrdersSet.size);
+
+  } catch (err) {
+    console.error("❌ fetchCanceledOrdersByISO error:", err);
+    canceledOrdersSet = new Set();
+  }
+}
+
+
 
 /* =====================================================
    DOM REFS
@@ -148,6 +311,7 @@ let REPORT_UI_BOUND = false;
 let CASHIER_ID = null;
 let CASHIER_NAME = null;
 let AUTO_SYNC_HOURS = 3; // default
+let canceledOrdersSet = new Set();
 
 
 
@@ -374,18 +538,6 @@ function isOrderActive(){
 }
 
 
-function updateSwitchCashierButton(){
-  const btn = document.getElementById("btnSwitchCashier");
-  if(!btn) return;
-
-  const locked = isOrderActive();
-  btn.disabled = locked;
-  btn.style.opacity = locked ? "0.5" : "1";
-  btn.style.cursor = locked ? "not-allowed" : "pointer";
-  btn.title = locked
-    ? "Tidak bisa ganti kasir saat ada transaksi aktif. Selesaikan atau Reset dulu."
-    : "Ganti kasir";
-}
 
 // ===== UTILITIES =====
 const formatRupiah = n => "Rp " + Number(n || 0).toLocaleString("id-ID");
@@ -664,9 +816,7 @@ CURRENT_HOLD_ID = h.id; // ✅ tandai sedang buka hold ini
   panelPayment.style.display = "none";
   panelProduct.style.display = "flex";
   btnNext.style.display = "block";
-
-  updateSwitchCashierButton();
-  closeHoldModal();
+closeHoldModal();
 }
 
 function deleteHold(id){
@@ -765,6 +915,37 @@ function updateOrderNumberUI() {
   const el = document.getElementById("orderNo");
   if (!el) return;
     el.textContent = CURRENT_SALESORDER_NO || CURRENT_LOCAL_ORDER_NO || "-";
+}
+// ===============================
+// CANCELED ORDERS CACHE (ONLINE)
+// ===============================
+
+
+async function fetchCanceledOrders(startISO, endISO) {
+  try {
+    let q = sb
+      .from("pos_canceled_orders")
+      .select("salesorder_no");
+
+    // filter by created_at kalau ada range
+    if (startISO && endISO) {
+      q = q.gte("created_at", startISO).lte("created_at", endISO);
+    }
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    canceledOrdersSet = new Set((data || []).map(r => r.salesorder_no));
+    console.log("✅ canceledOrders loaded:", canceledOrdersSet.size);
+
+  } catch (err) {
+    console.error("❌ fetchCanceledOrders error:", err);
+    canceledOrdersSet = new Set();
+  }
+}
+
+function isCanceledOrder(orderNo) {
+  return canceledOrdersSet.has(orderNo);
 }
 
 /* =====================================================
@@ -1668,8 +1849,7 @@ function renderCart(){
     itemCount.textContent=count;
     cartSubtotal.textContent=formatRupiah(total);
     cartTotal.textContent=formatRupiah(total);
-    updateSwitchCashierButton();
-    return;
+return;
   }
 
   cart.forEach(i=>{
@@ -1708,7 +1888,6 @@ function renderCart(){
   itemCount.textContent=count;
   cartSubtotal.textContent=formatRupiah(total);
   cartTotal.textContent=formatRupiah(total);
-  updateSwitchCashierButton();
 }
 
 /* =====================================================
@@ -2257,27 +2436,6 @@ async function processPayment() {
     // ✅ 4. SIMPAN PAYMENTS (INI YANG TADI KE-SKIP)
     await saveSalesOrderPayments(order.salesorder_no);
 
-    // (payload Jubelio boleh, tapi TIDAK mengganggu flow DB)
-    const jubelioPayload = buildJubelioPayload(
-      order,
-      cart.map(i => ({
-        item_id: i.jubelioItemId,
-        description: i.name,
-        qty_in_base: i.qty,
-        price: i.price,
-        amount: i.qty * i.price,
-        tax_id: 1,
-        unit: "Buah",
-        location_id: -1,
-        shipper: "Ambil Sendiri",
-        serial_no: "",
-        channel_order_detail_id: "",
-        tracking_no: ""
-      }))
-    );
-
-    await saveJubelioPayloadToOrder(order.salesorder_no, jubelioPayload);
-console.log("✅ jubelio_payload tersimpan");
 
 
 // hapus dari transaksi tersimpan (jika ada)
@@ -2325,61 +2483,6 @@ function backToEdit() {
 }
 
 
-async function saveJubelioPayloadToOrder(salesorderNo, payloadObj){
-  const { error } = await sb
-    .from("pos_sales_orders")
-    .update({
-      jubelio_payload: payloadObj,
-      jubelio_synced: false,
-      jubelio_synced_at: null,
-      jubelio_error: null
-    })
-    .eq("salesorder_no", salesorderNo);
-
-  if (error) {
-    console.error("❌ Gagal simpan jubelio_payload", error);
-    throw error;
-  }
-}
-async function txnSyncJubelio(){
-  if (!TXN_SELECTED?.salesorder_no) return;
-
-  const orderNo = TXN_SELECTED.salesorder_no;
-
-  const { data, error } = await sb
-    .from("pos_sales_orders")
-    .select("jubelio_payload,jubelio_synced,jubelio_error")
-    .eq("salesorder_no", orderNo)
-    .single();
-
-  if (error) {
-    alert("Gagal cek data sync");
-    return;
-  }
-
-  if (!data?.jubelio_payload) {
-    alert("Payload Jubelio belum tersimpan di transaksi ini.");
-    return;
-  }
-
-  // tandai ulang untuk retry sync
-  const { error: e2 } = await sb
-    .from("pos_sales_orders")
-    .update({
-      jubelio_synced: false,
-      jubelio_synced_at: null,
-      jubelio_error: null
-    })
-    .eq("salesorder_no", orderNo);
-
-  if (e2) {
-    alert("Gagal set retry sync");
-    return;
-  }
-
-  alert("OK. Transaksi ditandai untuk di-sync ke Jubelio (retry).");
-}
-
 /* =====================================================
    SALES ORDER NUMBER
 ===================================================== */
@@ -2402,61 +2505,7 @@ async function generateSalesOrderNo() {
   const seq = String(data).padStart(4, "0");
   return `TSJP-${ymd}-${hhmm}-${seq}`;
 }
-/* =====================================================
-   BUILD PAYLOAD JUBELIO
-===================================================== */
-function buildJubelioPayload(order, items) {
-  return {
-    mode: "new",
-    salesorder_id: 0,
 
-    salesorder_no: order.salesorder_no,
-    ref_no: order.salesorder_no,
-
-    contact_id: order.contact_id,
-    customer_name: order.customer_name,
-
-    transaction_date: order.transaction_date,
-
-    is_tax_included: false,
-    note: "Pesanan dari POS Offline",
-
-    sub_total: order.sub_total,
-    total_disc: 0,
-    total_tax: 0,
-    grand_total: order.grand_total,
-
-    location_id: -1,
-    store_id: -100,
-    source: 1,
-
-    is_canceled: false,
-    is_paid: true,
-
-    shipping_full_name: order.customer_name,
-    shipping_phone: normalizePhone(order.shipping_phone),
-    shipping_country: "Indonesia",
-
-    items: items.map(i => ({
-      salesorder_detail_id: 0,
-      item_id: i.item_id,
-      serial_no: "",
-      description: i.description,
-      tax_id: 1,
-      price: i.price,
-      unit: "Buah",
-      qty_in_base: i.qty_in_base,
-      disc: 0,
-      disc_amount: 0,
-      tax_amount: 0,
-      amount: i.amount,
-      location_id: -1,
-      shipper: "Ambil Sendiri",
-      channel_order_detail_id: "",
-      tracking_no: ""
-    }))
-  };
-}
 
 /* =====================================================
    SAVE SALES ORDER (HEADER/ITEMS/PAYMENTS)
@@ -2511,12 +2560,6 @@ async function saveSalesOrderHeader() {
     location_id: -1,
     store_id: -100,
     is_paid: !PAYMENT_LINES.some(p => p.method === "piutang"),
-
-// ✅ status sync Jubelio (queue)
-jubelio_synced: false,
-jubelio_synced_at: null,
-jubelio_error: null,
-jubelio_payload: null
   };
 
   const { data, error } = await sb
@@ -2902,7 +2945,6 @@ function loadOfflineTransactions(){
 }
 
 // ==============================
-// RESET UI TRANSAKSI (WAJIB SAAT GANTI KASIR)
 // ==============================
 function resetTransactionUI(){
   // reset state
@@ -2952,6 +2994,7 @@ if (fromVal && toVal) {
   const end   = new Date(toVal   + "T23:59:59");
   startISO = start.toISOString();
   endISO   = end.toISOString();
+  
 }
 // ===== FILTER KASIR TRANSAKSI =====
 const cashierFilter =
@@ -3033,17 +3076,20 @@ const activeCashierId =
     return;
   }
 
-  // ==========================
-  // ONLINE MODE → SUPABASE
-  // ==========================
-  const keyword = (txnSearchInput?.value || "").trim();
-  const from = (TXN_PAGE-1) * TXN_PAGE_SIZE;
-  const to = from + TXN_PAGE_SIZE - 1;
+ // ==========================
+// ONLINE MODE → SUPABASE
+// ==========================
+const keyword = (txnSearchInput?.value || "").trim();
+const from = (TXN_PAGE-1) * TXN_PAGE_SIZE;
+const to = from + TXN_PAGE_SIZE - 1;
 
- let q = sb
+
+let q = sb
   .from("pos_sales_orders")
-  .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,is_paid,payment_method", { count:"exact" })
+  .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,is_paid,payment_method,status", { count:"exact" })
+
   .order("transaction_date", { ascending:false });
+
 
 	// filter tanggal (from - to)
 if (startISO && endISO) {
@@ -3141,9 +3187,19 @@ function renderTransactionList(list){
 
   txnList.innerHTML = list.map(x => {
   const paid = x.is_paid === true;
-  const badge = paid
-    ? `<span class="badge paid">Lunas</span>`
-    : `<span class="badge unpaid">Belum</span>`;
+ const canceled =
+  String(x.status || "").toLowerCase() === "canceled" ||
+  isCanceledOrder(x.salesorder_no);
+
+
+
+const badge = canceled
+  ? `<span class="badge unpaid">Dibatalkan</span>`
+  : (paid
+      ? `<span class="badge paid">Lunas</span>`
+      : `<span class="badge unpaid">Belum</span>`
+    );
+
 
   return `
     <div class="txn-item one-line"
@@ -3298,9 +3354,15 @@ function renderTransactionDetail(txn){
   const paid = Number(h.is_paid) === 1;
 
   txnDetailSub.textContent = `${formatDateID(h.transaction_date)} • ${h.customer_name || "UMUM"}`;
-  txnDetailBadge.innerHTML = paid
-    ? `<span class="badge paid">Lunas</span>`
-    : `<span class="badge unpaid">Belum Lunas</span>`;
+  const canceled = String(h.status || "").toLowerCase() === "canceled";
+
+txnDetailBadge.innerHTML = canceled
+  ? `<span class="badge unpaid">Dibatalkan</span>`
+  : (paid
+      ? `<span class="badge paid">Lunas</span>`
+      : `<span class="badge unpaid">Belum Lunas</span>`
+    );
+
 
   const phone = h.shipping_phone || "-";
   const total = Number(h.grand_total || 0);
@@ -3353,6 +3415,187 @@ function renderTransactionDetail(txn){
 
   txnDetailActions.style.display = "flex";
 }
+// ==============================
+// ✅ CANCEL TRANSACTION (TAHAP 1: UI TEST ONLY)
+// ==============================
+// ==============================
+// ✅ CANCEL TRANSACTION (FINAL)
+// - insert log ke pos_canceled_orders
+// - update status di pos_sales_orders
+// ==============================
+async function txnCancelTransaction(){
+  if(!TXN_SELECTED || !TXN_SELECTED.salesorder_no){
+    alert("Pilih transaksi dulu.");
+    return;
+  }
+
+  const orderNo = TXN_SELECTED.salesorder_no;
+
+  // ✅ kalau sudah tercatat canceled, jangan ulang
+  if(typeof isCanceledOrder === "function" && isCanceledOrder(orderNo)){
+    alert("Transaksi ini sudah dibatalkan.");
+    return;
+  }
+
+  // ✅ KONFIRMASI: user wajib ketik ulang nomor pesanan
+  const typed = prompt(
+    "Konfirmasi pembatalan transaksi\n\nKetik NOMOR PESANAN ini persis untuk lanjut:\n" + orderNo,
+    ""
+  );
+
+  if(typed === null) return; // user batal
+  if(String(typed).trim() !== orderNo){
+    alert("Nomor pesanan tidak cocok. Pembatalan dibatalkan.");
+    return;
+  }
+
+  // (optional) konfirmasi ekstra
+  if(!confirm("Yakin batalkan transaksi ini?\n\n" + orderNo)) return;
+
+  const btnCancel = document.querySelector("#btn-cancel-transaction");
+  const badgeStatus = document.querySelector("#txn-status-badge");
+
+  const prevText = btnCancel ? btnCancel.textContent : "";
+  let cancelSuccess = false;
+
+  try{
+    if(btnCancel){
+      btnCancel.disabled = true;
+      btnCancel.textContent = "Membatalkan...";
+    }
+
+    if(badgeStatus) badgeStatus.textContent = "Membatalkan...";
+
+    const supabaseOK = await canReachSupabase();
+    if(!isOnline() || !supabaseOK){
+      throw new Error("Offline / Supabase tidak bisa diakses.");
+    }
+
+    // ✅ NOTE: jangan pakai variabel 'note' yang belum didefinisikan
+    const cancelNote = "Canceled from POS";
+    const canceledAtISO = new Date().toISOString();
+    const canceledBy = (typeof getCurrentCashierEmail === "function"
+      ? getCurrentCashierEmail()
+      : (TXN_SELECTED.cashier_id || null)
+    );
+
+    // =========================
+    // A) UPDATE HEADER (WAJIB)
+    // =========================
+    let { error: eUp } = await sb
+      .from("pos_sales_orders")
+      .update({
+        status: "canceled",
+        canceled_at: canceledAtISO,
+        canceled_by: canceledBy,
+        canceled_note: cancelNote
+      })
+      .eq("salesorder_no", orderNo);
+
+    // ✅ fallback kalau schema cache PostgREST belum kenal kolom canceled_*
+    if(eUp && String(eUp.message || "").includes("schema cache")){
+      console.warn("⚠️ schema cache belum update, fallback update status saja:", eUp);
+      const fb = await sb
+        .from("pos_sales_orders")
+        .update({ status: "canceled" })
+        .eq("salesorder_no", orderNo);
+      eUp = fb.error;
+    }
+
+    if(eUp){
+      throw eUp;
+    }
+
+    // =========================
+    // B) LOG CANCEL (BEST EFFORT)
+    // =========================
+    try{
+      // kalau tabel punya unique index salesorder_no, ini aman
+      const up = await sb
+        .from("pos_canceled_orders")
+        .upsert(
+          [{
+            salesorder_no: orderNo,
+            created_by: canceledBy,
+            note: cancelNote
+          }],
+          { onConflict: "salesorder_no" }
+        );
+
+      if(up.error){
+        // kalau upsert gagal karena tidak ada unique constraint, coba insert biasa
+        console.warn("⚠️ upsert cancel log gagal, coba insert biasa:", up.error);
+        const ins = await sb
+          .from("pos_canceled_orders")
+          .insert([{ salesorder_no: orderNo, created_by: canceledBy, note: cancelNote }]);
+        if(ins.error){
+          console.warn("⚠️ insert cancel log gagal (diabaikan):", ins.error);
+        }
+      }
+    } catch(logErr){
+      console.warn("⚠️ cancel log error (diabaikan):", logErr);
+    }
+
+    // =========================
+    // C) UPDATE CACHE + UI
+    // =========================
+    try{
+      if(typeof canceledOrdersSet !== "undefined" && canceledOrdersSet && canceledOrdersSet.add){
+        canceledOrdersSet.add(orderNo);
+      }
+    } catch(_) {}
+
+    // update state lokal biar UI konsisten tanpa refresh pun
+    try{
+      if(TXN_SELECTED){
+        TXN_SELECTED.status = "canceled";
+        TXN_SELECTED.canceled_at = canceledAtISO;
+        TXN_SELECTED.canceled_by = canceledBy;
+        TXN_SELECTED.canceled_note = cancelNote;
+      }
+    } catch(_) {}
+
+    if(badgeStatus) badgeStatus.textContent = "Dibatalkan";
+    if(btnCancel){
+      btnCancel.textContent = "Dibatalkan";
+      btnCancel.disabled = true;
+    }
+
+    cancelSuccess = true;
+
+    // =========================
+    // D) REFRESH LIST/DETAIL (TIDAK BOLEH BIKIN ALERT GAGAL)
+    // =========================
+    try{
+      await loadTransactions(false);
+      if(typeof renderTransactionDetail === "function"){
+        renderTransactionDetail(TXN_SELECTED);
+      }
+    } catch(refreshErr){
+      console.warn("⚠️ Cancel sukses tapi refresh UI gagal:", refreshErr);
+    }
+
+    alert("✅ Berhasil membatalkan transaksi: " + orderNo);
+
+  } catch(err){
+    console.error("❌ Cancel error:", err);
+
+    if(badgeStatus) badgeStatus.textContent = "Gagal batal";
+    if(btnCancel){
+      btnCancel.disabled = false;           // biar bisa coba lagi
+      btnCancel.textContent = prevText || "Batalkan";
+    }
+
+    alert("Gagal membatalkan transaksi.\n\n" + (err?.message || err));
+  } finally{
+    // kalau sukses, tombol sudah disabled + teks "Dibatalkan"
+    if(!cancelSuccess && btnCancel && btnCancel.textContent === "Membatalkan..."){
+      btnCancel.textContent = prevText || "Batalkan";
+      btnCancel.disabled = false;
+    }
+  }
+}
+
 
 function txnReprint(){
   if (!TXN_SELECTED) return;
@@ -3573,9 +3816,7 @@ if (isOnline()) {
   await loadProducts();
   renderCart();
   updateOrderNumberUI();
-  updateSwitchCashierButton();
-
-  if (ACTIVE_CUSTOMER) {
+if (ACTIVE_CUSTOMER) {
     const input = document.getElementById("customerInput");
     if (input) {
       input.value = ACTIVE_CUSTOMER.contact_name + " (" + ACTIVE_CUSTOMER.category_display + ")";
@@ -3612,7 +3853,7 @@ function selectCashier(id, name){
   }
 
   document.getElementById("welcomeScreen").style.display = "none";
-    updateSwitchCashierButton(); // ✅ tambah ini
+// ✅ tambah ini
 	  // ⬇️ PAKSA TAMPILKAN POS
   panelProduct.style.display = "flex";
   panelPayment.style.display = "none";
@@ -3652,28 +3893,6 @@ function checkCashier(){
 
 }
 
-function resetCashier(){
-// ✅ OPSI A: kunci ganti kasir saat transaksi aktif
-  if (isOrderActive()){
-    alert("Tidak bisa ganti kasir saat ada transaksi aktif.\nSelesaikan transaksi atau klik Reset dulu.");
-    return;
-  }
-  if (!confirm("Ganti kasir? Transaksi berjalan akan tetap aman.")) return;
-
-  localStorage.removeItem("pos_cashier_id");
-  localStorage.removeItem("pos_cashier_name");
-
-  CASHIER_ID = null;
-  CASHIER_NAME = null;
-
-  updateCashierInfo();
-  updateTxnHead();
-
-  // ✅ ini WAJIB
-  resetTransactionUI();
-
-  document.getElementById("welcomeScreen").style.display = "flex";
-}
 
 function updateTxnHead(){
   const el = document.getElementById("txnListHead");
@@ -3991,6 +4210,7 @@ function computeAppliedPayment(total, payList){
   }
 async function loadReport(forceRefresh){
   console.log("LOAD REPORT DIPANGGIL");
+
   const info = document.getElementById("reportInfo");
   const filterEl = document.getElementById("reportCashierFilter");
 
@@ -3999,15 +4219,22 @@ async function loadReport(forceRefresh){
     const to   = document.getElementById("reportDateTo")?.value || "";
 
     if(!from || !to){
-      alert("Pilih tanggal dulu.");
+      if (info) info.textContent = "Pilih tanggal dulu.";
       return;
     }
 
-    // ✅ TARUH DI SINI (PALING ATAS loadReport)
+    // range local -> ISO (UTC) untuk query timestamp
     const start = new Date(from + "T00:00:00");
     const end   = new Date(to   + "T23:59:59");
     const startISO = start.toISOString();
     const endISO   = end.toISOString();
+
+    // load canceled set (best-effort)
+    try {
+      await fetchCanceledOrdersByISO(startISO, endISO);
+    } catch (e) {
+      console.warn("fetchCanceledOrdersByISO gagal (diabaikan):", e);
+    }
 
     const filterMode = filterEl?.value || "ALL";
 
@@ -4026,8 +4253,6 @@ async function loadReport(forceRefresh){
       cashierFilterId = CASHIER_ID || localStorage.getItem("pos_cashier_id") || null;
     }
 
-   // if(info) info.textContent = "⏳ Memuat laporan...";
-
     // ====== AGGREGATOR ======
     let trxCount = 0;
     let omzet = 0;
@@ -4035,38 +4260,39 @@ async function loadReport(forceRefresh){
     const byCashier = {};
 
     function bumpCashier(cashier_id, cashier_name, add){
-  const id = cashier_id || "UNKNOWN";
+      const id = cashier_id || "UNKNOWN";
 
-  if (!byCashier[id]) {
-    byCashier[id] = {
-      cashier_id: id,
-      cashier_name: cashier_name || "UNKNOWN",
-      trxCount: 0,
-      omzet: 0,
-      cash: 0,
-      qris: 0,
-      debit_bca: 0,
-      debit_mandiri: 0,
-      transfer_bca: 0,
-      transfer_mandiri: 0,
-      piutang: 0
-    };
-  }
+      if (!byCashier[id]) {
+        byCashier[id] = {
+          cashier_id: id,
+          cashier_name: cashier_name || "UNKNOWN",
+          trxCount: 0,
+          omzet: 0,
+          cash: 0,
+          qris: 0,
+          debit_bca: 0,
+          debit_mandiri: 0,
+          transfer_bca: 0,
+          transfer_mandiri: 0,
+          piutang: 0
+        };
+      }
 
-  const x = byCashier[id];
-  x.trxCount += (add.trxCount || 0);
-  x.omzet += (add.omzet || 0);
-  x.cash += (add.cash || 0);
-  x.qris += (add.qris || 0);
-  x.debit_bca += (add.debit_bca || 0);
-  x.debit_mandiri += (add.debit_mandiri || 0);
-  x.transfer_bca += (add.transfer_bca || 0);
-  x.transfer_mandiri += (add.transfer_mandiri || 0);
-  x.piutang += (add.piutang || 0);
-}
+      const x = byCashier[id];
+      x.trxCount += (add.trxCount || 0);
+      x.omzet += (add.omzet || 0);
+      x.cash += (add.cash || 0);
+      x.qris += (add.qris || 0);
+      x.debit_bca += (add.debit_bca || 0);
+      x.debit_mandiri += (add.debit_mandiri || 0);
+      x.transfer_bca += (add.transfer_bca || 0);
+      x.transfer_mandiri += (add.transfer_mandiri || 0);
+      x.piutang += (add.piutang || 0);
+    }
 
-
-    // ====== OFFLINE ======
+    // ======================
+    // A) OFFLINE (localStorage)
+    // ======================
     const offlineList = loadOfflineTransactions();
     const offlineOnDate = (offlineList || []).filter(o => {
       const t = new Date(o.created_at || 0).getTime();
@@ -4081,39 +4307,32 @@ async function loadReport(forceRefresh){
 
       const appliedObj = computeAppliedPayment(o.total, o.payments).applied;
 
-Object.entries(appliedObj).forEach(([k, amt]) => {
-  // bumpPay butuh label mentah, tapi kamu pakai normPayKey di dalam.
-  // Jadi kita langsung bump map final:
-  payMap[k] = (payMap[k] || 0) + Number(amt || 0);
-});
-
-
-      const sumByKey = (key) => (o.payments || [])
-        .filter(p => normPayKey(p.label) === key)
-        .reduce((s,p)=> s + Number(p.amount||0), 0);
+      Object.entries(appliedObj).forEach(([k, amt]) => {
+        payMap[k] = (payMap[k] || 0) + Number(amt || 0);
+      });
 
       bumpCashier(o.cashier_id, o.cashier_name, {
-  trxCount: 1,
-  omzet: Number(o.total||0),
-  cash: Number(appliedObj["Cash"] || 0),
-  qris: Number(appliedObj["QRIS"] || 0),
-  debit_bca: Number(appliedObj["Debit BCA"] || 0),
-  debit_mandiri: Number(appliedObj["Debit Mandiri"] || 0),
-  transfer_bca: Number(appliedObj["Transfer BCA"] || 0),
-  transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0),
-piutang: Number(appliedObj["Piutang"] || 0)
-
-
-});
-
+        trxCount: 1,
+        omzet: Number(o.total || 0),
+        cash: Number(appliedObj["Cash"] || 0),
+        qris: Number(appliedObj["QRIS"] || 0),
+        debit_bca: Number(appliedObj["Debit BCA"] || 0),
+        debit_mandiri: Number(appliedObj["Debit Mandiri"] || 0),
+        transfer_bca: Number(appliedObj["Transfer BCA"] || 0),
+        transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0),
+        piutang: Number(appliedObj["Piutang"] || 0)
+      });
     }
 
-    // ====== ONLINE ======
+    // ======================
+    // B) ONLINE (Supabase)
+    // ======================
     const supabaseOK = await canReachSupabase();
     if(isOnline() && supabaseOK){
+
       let q = sb
         .from("pos_sales_orders")
-        .select("salesorder_no,grand_total,cashier_id,cashier_name,transaction_date")
+        .select("salesorder_no,grand_total,cashier_id,cashier_name,transaction_date,status")
         .gte("transaction_date", startISO)
         .lte("transaction_date", endISO)
         .order("transaction_date", { ascending:false });
@@ -4126,101 +4345,101 @@ piutang: Number(appliedObj["Piutang"] || 0)
       if(e1){
         console.error("❌ Report load orders error:", e1);
       } else {
-        const orderNos = (orders || []).map(o => o.salesorder_no);
-        trxCount += (orders || []).length;
-        omzet += (orders || []).reduce((s,o)=> s + Number(o.grand_total||0), 0);
+        // buang canceled (3 lapis)
+        const activeOrders = (orders || []).filter(o =>
+          !o.canceled_at &&
+          String(o.status || "").toLowerCase() !== "canceled" &&
+          !isCanceledOrder(o.salesorder_no)
+        );
 
+        trxCount += activeOrders.length;
+        omzet += activeOrders.reduce((s,o)=> s + Number(o.grand_total || 0), 0);
+
+        const orderNos = activeOrders.map(o => o.salesorder_no);
+
+        // ambil payments sekaligus
+        let pays = [];
         if(orderNos.length){
-          const { data: pays, error: e2 } = await sb
+          const resPay = await sb
             .from("pos_sales_order_payments")
             .select("salesorder_no,payment_method,amount")
             .in("salesorder_no", orderNos);
 
-          if(e2){
-            console.error("❌ Report load payments error:", e2);
+          if(resPay.error){
+            console.error("❌ Report load payments error:", resPay.error);
           } else {
-
-            const payByOrder = {};
-            (pays || []).forEach(p => {
-              const no = p.salesorder_no;
-              if(!payByOrder[no]) payByOrder[no] = [];
-              payByOrder[no].push(p);
-            });
-
-            (orders || []).forEach(o => {
-  const list = payByOrder[o.salesorder_no] || [];
-
-  // ✅ hitung NET payment yang benar
-  const appliedObj = computeAppliedPayment(
-    o.grand_total,
-    list.map(p => ({
-      label: p.payment_method,
-      amount: Number(p.amount || 0)
-    }))
-  ).applied;
-
-  // ✅ update ringkasan metode bayar (payMap) pakai appliedObj
-  Object.entries(appliedObj).forEach(([k, amt]) => {
-    payMap[k] = (payMap[k] || 0) + Number(amt || 0);
-  });
-
-  // ✅ update per kasir pakai appliedObj (bukan sum mentah)
-  bumpCashier(o.cashier_id, o.cashier_name, {
-    trxCount: 1,
-    omzet: Number(o.grand_total || 0),
-    cash: Number(appliedObj["Cash"] || 0),
-    qris: Number(appliedObj["QRIS"] || 0),
-    debit_bca: Number(appliedObj["Debit BCA"] || 0),
-    debit_mandiri: Number(appliedObj["Debit Mandiri"] || 0),
-    transfer_bca: Number(appliedObj["Transfer BCA"] || 0),
-    transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0),
-	piutang: Number(appliedObj["Piutang"] || 0)
-
-  });
-});
-
+            pays = resPay.data || [];
           }
+        }
+
+        // group payments per order
+        const payByOrder = {};
+        (pays || []).forEach(p => {
+          const no = p.salesorder_no;
+          if(!payByOrder[no]) payByOrder[no] = [];
+          payByOrder[no].push(p);
+        });
+
+        // apply payment logic per order (cash applied, piutang tidak dihitung bayar)
+        for(const o of activeOrders){
+          const plist = payByOrder[o.salesorder_no] || [];
+          const appliedObj = computeAppliedPayment(o.grand_total, plist).applied;
+
+          Object.entries(appliedObj).forEach(([k, amt]) => {
+            payMap[k] = (payMap[k] || 0) + Number(amt || 0);
+          });
+
+          bumpCashier(o.cashier_id, o.cashier_name, {
+            trxCount: 1,
+            omzet: Number(o.grand_total || 0),
+            cash: Number(appliedObj["Cash"] || 0),
+            qris: Number(appliedObj["QRIS"] || 0),
+            debit_bca: Number(appliedObj["Debit BCA"] || 0),
+            debit_mandiri: Number(appliedObj["Debit Mandiri"] || 0),
+            transfer_bca: Number(appliedObj["Transfer BCA"] || 0),
+            transfer_mandiri: Number(appliedObj["Transfer Mandiri"] || 0),
+            piutang: Number(appliedObj["Piutang"] || 0)
+          });
         }
       }
     }
 
-
-    // ====== RENDER (WAJIB DI AKHIR TRY) ======
+    // ======================
+    // C) RENDER UI (WAJIB DI AKHIR)
+    // ======================
     makeSummaryCards({ trxCount, omzet, payMap });
-    renderByCashier(Object.values(byCashier));
 
-    // if(info){
-//   info.textContent = `✅ Laporan siap. Total transaksi: ${trxCount} • Total omzet: ${formatRupiah(omzet)}`;
-// }
+    // render by cashier hanya kalau filter ALL
+    if ((filterEl?.value || "ALL") === "ALL") {
+      renderByCashier(Object.values(byCashier));
+    } else {
+      // kalau ACTIVE, biar gak ada sisa tabel
+      const box = document.getElementById("reportByCashier");
+      if (box) box.innerHTML = "";
+    }
 
+    if (info) {
+      const who = cashierFilterId ? `Kasir: ${CASHIER_NAME || ""} (${cashierFilterId})` : "Semua Kasir";
+      info.textContent = `${from} s/d ${to} • ${who}`;
+    }
 
   } catch (err) {
-    console.error("❌ loadReport crash:", err);
-   // if(info) info.textContent = "❌ Gagal memuat laporan (lihat console).";
-  } finally {
-    // safety net: jangan sampai nyangkut “memuat”
-   // if (info && String(info.textContent || "").includes("Memuat")) {
-   //   info.textContent = "✅ Laporan siap.";
-  //  }
+    console.error("❌ loadReport error:", err);
+    if (info) info.textContent = "Gagal memuat laporan. Cek Console (F12).";
+
+    // tetap render kosong biar user lihat “0”
+    makeSummaryCards({ trxCount: 0, omzet: 0, payMap: {} });
+
+    const box = document.getElementById("reportByCashier");
+    if (box) box.innerHTML = "";
   }
 }
 
-  const cashierButtons = document.querySelectorAll("#welcomeScreen .btn-cashier");
-  const cashierHandlers = [
-    "selectCashier('KSR-01','Rifqi')",
-    "selectCashier('KSR-02','Inan')",
-    "selectCashier('KSR-03','Imad')",
-    "selectCashier('KSR-04','Ahmad')"
-  ];
-  cashierButtons.forEach((btn, idx) => {
-    const handler = cashierHandlers[idx];
-    if (handler) btn.setAttribute("onclick", handler);
-  });
 
-  const btnSwitchCashier = document.getElementById("btnSwitchCashier");
-  if (btnSwitchCashier) btnSwitchCashier.setAttribute("onclick", "resetCashier()");
+  
+  // ✅ Cashier buttons akan dirender dari Supabase (lihat loadAndRenderCashiers)
 
-  const tabSales = document.getElementById("tabSales");
+const tabSales = document.getElementById("tabSales");
   if (tabSales) tabSales.setAttribute("onclick", "switchLeftTab(\'sales\')");
   const tabTxn = document.getElementById("tabTxn");
   if (tabTxn) tabTxn.setAttribute("onclick", "switchLeftTab(\'txn\')");
@@ -4258,10 +4477,12 @@ piutang: Number(appliedObj["Piutang"] || 0)
   if (txnPagingButtons[0]) txnPagingButtons[0].setAttribute("onclick", "txnPrevPage()");
   if (txnPagingButtons[1]) txnPagingButtons[1].setAttribute("onclick", "txnNextPage()");
 
-  const txnActions = document.querySelectorAll("#txnDetailActions button");
-  if (txnActions[0]) txnActions[0].setAttribute("onclick", "txnReprint()");
-  if (txnActions[1]) txnActions[1].setAttribute("onclick", "txnSyncJubelio()");
-  if (txnActions[2]) txnActions[2].setAttribute("onclick", "txnReorder()");
+const txnActions = document.querySelectorAll("#txnDetailActions button");
+if (txnActions[0]) txnActions[0].setAttribute("onclick", "txnReprint()");
+if (txnActions[1]) txnActions[1].setAttribute("onclick", "txnCancelTransaction()");
+if (txnActions[2]) txnActions[2].setAttribute("onclick", "txnReorder()");
+
+
 
   const manualSyncButton = document.querySelector("#panel-settings .btn-primary");
   if (manualSyncButton) manualSyncButton.setAttribute("onclick", "manualSyncProducts()");
@@ -4283,5 +4504,12 @@ piutang: Number(appliedObj["Piutang"] || 0)
   if (btnNext) btnNext.setAttribute("onclick", "goToPayment()");
 
   const holdToolbarButtons = document.querySelectorAll("#holdModal .btn-outline");
-  if (holdToolbarButtons[0]) holdToolbarButtons[0].setAttribute("onclick", "refreshHoldList()");
-  if (holdToolbarButtons[1]) holdToolbarButtons[1].setAttribute("onclick", "closeHoldModal()");
+if (holdToolbarButtons[0]) holdToolbarButtons[0].setAttribute("onclick", "refreshHoldList()");
+if (holdToolbarButtons[1]) holdToolbarButtons[1].setAttribute("onclick", "closeHoldModal()");
+
+// ===== BOOT =====
+document.addEventListener("DOMContentLoaded", () => {
+  removeSwitchCashierUI();
+  loadAndRenderCashiers();
+});
+
