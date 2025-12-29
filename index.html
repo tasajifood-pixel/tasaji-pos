@@ -10,7 +10,7 @@
      SUPABASE SDK
 ===================================================== -->
 
-<link rel="stylesheet" href="./pos.css">
+<link rel="stylesheet" href="./style.css ">
 </head>
 
 <body>
@@ -251,6 +251,34 @@
    </div> <!-- ✅ END wrapper scroll -->
 
   <div class="pay-footer-row">
+  <!-- === WA RECEIPT OPTION (TAHAP 1) === -->
+<div id="waReceiptOption" style="margin:10px 0;">
+  <label style="cursor:pointer;">
+    <input type="checkbox" id="chkSendWaReceipt">
+    Kirim Nota via WhatsApp
+  </label>
+</div>
+
+
+<!-- === WA PHONE INPUT (TAHAP 5) === -->
+<div id="waPhoneBox" style="display:none; margin:10px 0;">
+  <label style="display:block; cursor:default; font-weight:700; margin-bottom:6px;">
+    No WhatsApp (untuk pelanggan umum)
+  </label>
+
+  <input
+    type="tel"
+    id="waPhoneInput"
+    placeholder="Contoh: 62812xxxxxxx (tanpa +, tanpa spasi)"
+    style="width:100%; padding:10px; font-size:15px;"
+    autocomplete="tel"
+  />
+
+  <div style="font-size:12px; color:#666; margin-top:6px;">
+    Jika input mulai 0 atau 8, nanti dinormalisasi jadi format 62xxxxxxxxxxx.
+  </div>
+</div>
+
     <button id="btnFinishPayment" class="btn-pay disabled" disabled>
       Selesaikan Transaksi
     </button>
@@ -640,7 +668,7 @@
 <script src="./auth.js"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="index.js"></script>
+<script src="app.js"></script>
 
 </body>
 </html>
