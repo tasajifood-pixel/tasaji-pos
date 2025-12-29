@@ -223,6 +223,26 @@ const btnNext = document.getElementById("btnNext");
 const payLinesList = document.getElementById("payLinesList");
 const payRemaining = document.getElementById("payRemaining");
 const btnFinishPayment = document.getElementById("btnFinishPayment");
+// === WA PHONE INPUT DOM (TAHAP 5) ===
+const waPhoneBox = document.getElementById("waPhoneBox");
+const waPhoneInput = document.getElementById("waPhoneInput");
+// simpan no WA terakhir untuk mempercepat input berikutnya
+if (waPhoneInput && !waPhoneInput.dataset.boundWa) {
+  waPhoneInput.dataset.boundWa = "1";
+
+  waPhoneInput.addEventListener("input", () => {
+    const n = normalizeWaPhone(waPhoneInput.value);
+    if (n) localStorage.setItem("pos_last_wa_phone", n);
+  });
+
+  waPhoneInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      console.log("[WA_PHONE_UI] enter ->", normalizeWaPhone(waPhoneInput.value));
+      if (btnFinishPayment) btnFinishPayment.focus();
+    }
+  });
+}
 
 const txnSearchInput = document.getElementById("txnSearchInput");
 const txnList = document.getElementById("txnList");
@@ -1944,6 +1964,8 @@ function selectCustomer(contactId) {
   renderCart();
 
   saveOrderState();
+  try { refreshWaPhoneUI(); } catch(_) {}
+
 }
 
 /* =====================================================
@@ -2380,88 +2402,350 @@ function bindPaymentMethodButtons(){
   });
 }
 
+/* =====================================================
+   WA RECEIPT - PHONE INPUT UI (TAHAP 5)
+===================================================== */
 
-async function processPayment() {
-  // ==============================
-  // OFFLINE MODE: SIMPAN LOKAL SAJA
-  // ==============================
-  if (!isOnline()) {
+function normalizeWaPhone(raw){
+  let s = String(raw || "").trim();
+  s = s.replace(/[^\d]/g, ""); // digits only
+  if (!s) return "";
 
-    const offlineOrder = {
-      local_order_no: CURRENT_LOCAL_ORDER_NO || generateLocalOrderNo(),
-      cashier_id: CASHIER_ID,
-      cashier_name: CASHIER_NAME,
-      created_at: new Date().toISOString(),
-      customer: ACTIVE_CUSTOMER,
-      cart: cart,
-      payments: PAYMENT_LINES,
-      total: calcTotal(),
-      status: "OFFLINE_DRAFT"
-    };
+  // 0812xxxx -> 62812xxxx
+  if (s.startsWith("0")) s = "62" + s.slice(1);
 
-    const key = "pos_offline_orders_v1";
-    const list = JSON.parse(localStorage.getItem(key) || "[]");
-    list.push(offlineOrder);
-    localStorage.setItem(key, JSON.stringify(list));
+  // 812xxxx -> 62812xxxx
+  if (s.startsWith("8")) s = "62" + s;
 
-    // cetak struk pakai nomor LOCAL
-    generateReceiptData(
-      offlineOrder.local_order_no,
-      cart,
-      PAYMENT_LINES,
-      {
-        customer_name: ACTIVE_CUSTOMER?.contact_name || "UMUM",
-        cashier_name: CASHIER_NAME,
-        transaction_date: offlineOrder.created_at,
-        grand_total: offlineOrder.total
-      }
-    );
+  return s;
+}
+function buildWaReceiptText(receiptData) {
+  // receiptData: kita coba pakai variabel struk yang sudah ada di project
+  // fallback aman kalau beberapa field tidak ada
+  const lines = [];
 
-    resetAll();
-    alert("⚠️ Transaksi disimpan OFFLINE.\nAkan disinkronkan saat online.");
+  lines.push("TASAJI FOOD");
+  if (receiptData?.receipt_no) lines.push("No: " + receiptData.receipt_no);
+  if (receiptData?.date_str) lines.push("Tanggal: " + receiptData.date_str);
+  if (receiptData?.cashier_name) lines.push("Kasir: " + receiptData.cashier_name);
+  if (receiptData?.customer_name) lines.push("Customer: " + receiptData.customer_name);
+
+  lines.push("------------------------------");
+
+  const items = receiptData?.items || [];
+  for (const it of items) {
+    // format: Nama xQty @Harga = Subtotal (simple)
+    const name = it.name ?? it.product_name ?? "Item";
+    const qty = it.qty ?? it.quantity ?? 1;
+    const price = it.price ?? it.unit_price ?? 0;
+    const sub = it.subtotal ?? (qty * price);
+
+    lines.push(`${name}`);
+    lines.push(`x${qty}  @${formatRupiah(price)}   = ${formatRupiah(sub)}`);
+  }
+
+  lines.push("------------------------------");
+
+  if (receiptData?.total != null) lines.push("TOTAL: " + formatRupiah(receiptData.total));
+  if (receiptData?.paid != null) lines.push("BAYAR: " + formatRupiah(receiptData.paid));
+  if (receiptData?.change != null) lines.push("KEMBALI: " + formatRupiah(receiptData.change));
+
+  lines.push("");
+  lines.push("Terima kasih 🙏");
+
+  return lines.join("\n");
+}
+
+function copyToClipboardFallback(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function openWhatsAppWithText(phone62, text) {
+  const msg = encodeURIComponent(text);
+  const url = `https://wa.me/${phone62}?text=${msg}`;
+  console.log("[WA_OPEN] url ->", url);
+
+  const w = window.open(url, "_blank");
+
+  // fallback kalau popup diblok browser
+  if (!w) {
+    console.warn("[WA_OPEN] popup blocked");
+    const copied = copyToClipboardFallback(url);
+
+    const msgInfo =
+      "Browser memblokir popup WhatsApp.\n" +
+      (copied ? "Link WA sudah dicopy.\n" : "") +
+      "Klik OK untuk buka WhatsApp di tab ini (aplikasi POS akan pindah).";
+
+    if (confirm(msgInfo)) {
+      window.location.href = url;
+    }
+  }
+}
+
+
+function getActiveCustomerWa(){
+  const p = (ACTIVE_CUSTOMER && ACTIVE_CUSTOMER.phone != null)
+    ? String(ACTIVE_CUSTOMER.phone).trim()
+    : "";
+  return normalizeWaPhone(p);
+}
+
+function refreshWaPhoneUI(){
+  const chk = document.getElementById("chkSendWaReceipt");
+  const isWaMode = chk ? chk.checked : false;
+
+  // ambil ulang DOM setiap kali dipanggil (biar pasti ketemu)
+  const waPhoneBoxEl = document.getElementById("waPhoneBox");
+  const waPhoneInputEl = document.getElementById("waPhoneInput");
+
+  if (!waPhoneBoxEl || !waPhoneInputEl) {
+    console.warn("[WA_PHONE_UI] DOM not found", { waPhoneBoxEl, waPhoneInputEl });
     return;
   }
 
+  // kalau WA mode mati -> sembunyikan
+  if (!isWaMode){
+    waPhoneBoxEl.style.display = "none";
+    waPhoneInputEl.required = false;
+    return;
+  }
+
+  const custPhone = getActiveCustomerWa();
+
+  if (custPhone){
+    // MEMBER (auto)
+    waPhoneBoxEl.style.display = "none";
+    waPhoneInputEl.required = false;
+    waPhoneInputEl.value = custPhone;
+    console.log("[WA_PHONE_UI] member auto ->", custPhone);
+  } else {
+    // GUEST (manual)
+    waPhoneBoxEl.style.display = "block";
+    waPhoneInputEl.required = true;
+
+    const last = localStorage.getItem("pos_last_wa_phone") || "";
+    if (!waPhoneInputEl.value && last) waPhoneInputEl.value = last;
+
+    console.log("[WA_PHONE_UI] guest -> show input");
+  }
+}
+
+
+async function processPayment() {
+  if (window.__POS_PAY_LOCK) {
+    console.warn("[PAY] blocked: double click");
+    return;
+  }
+  window.__POS_PAY_LOCK = true;
+
   try {
+    // === INTERCEPT FINISH PAYMENT (TAHAP 2) ===
+    const chkSendWaReceipt = document.getElementById("chkSendWaReceipt");
+    const isWaMode = chkSendWaReceipt ? chkSendWaReceipt.checked : false;
 
-    // ✅ 1. PASTIKAN item_id SEMUA VALID
-    await hydrateCartItemIds();
+    if (isWaMode) {
+      console.log("[FINISH_PAYMENT] MODE = WA");
+    } else {
+      console.log("[FINISH_PAYMENT] MODE = PRINT");
+    }
 
-    // ✅ 2. SIMPAN HEADER
-    const order = await saveSalesOrderHeader();
+    // === WA TARGET DETECTION (TAHAP 4) ===
+    if (isWaMode) {
+      const waPhoneRaw = (ACTIVE_CUSTOMER?.phone != null)
+        ? String(ACTIVE_CUSTOMER.phone).trim()
+        : "";
 
-    // ✅ 3. SIMPAN ITEMS
-    await saveSalesOrderItems(order.salesorder_no);
+      if (ACTIVE_CUSTOMER && waPhoneRaw) {
+        console.log("[WA_TARGET] CUSTOMER = MEMBER (auto) ->", waPhoneRaw);
+      } else {
+        console.log("[WA_TARGET] CUSTOMER = GUEST (input required)");
+      }
+    }
 
-    // ✅ 4. SIMPAN PAYMENTS (INI YANG TADI KE-SKIP)
-    await saveSalesOrderPayments(order.salesorder_no);
+    // === WA FINAL PHONE + VALIDATION (TAHAP 6) ===
+    if (isWaMode) {
+      const memberPhone = normalizeWaPhone(ACTIVE_CUSTOMER?.phone ?? "");
 
+      const waPhoneInputEl = document.getElementById("waPhoneInput");
+      const guestPhoneRaw = waPhoneInputEl ? waPhoneInputEl.value : "";
+      const guestPhone = normalizeWaPhone(guestPhoneRaw);
 
+      const finalWaPhone = memberPhone || guestPhone;
 
-// hapus dari transaksi tersimpan (jika ada)
-removeCurrentHoldIfAny();
+      // WAJIB ADA NOMOR (kalau user centang WA)
+      if (!finalWaPhone) {
+        alert("No WhatsApp belum diisi.\nIsi dulu nomor untuk kirim nota via WhatsApp.");
+        console.warn("[WA_FINAL] missing phone -> STOP");
 
-// cetak struk (print otomatis ada di dalamnya)
-generateReceiptData(
-  order.salesorder_no,
-  cart,
-  PAYMENT_LINES,
-  order
-);
+        if (waPhoneInputEl) {
+          waPhoneInputEl.focus();
+          try {
+            waPhoneInputEl.scrollIntoView({ behavior: "smooth", block: "center" });
+          } catch (_) {}
+        }
+        return; // STOP proses pembayaran supaya tidak lanjut
+      }
 
-// reset transaksi SETELAH print dipanggil
-resetAll();
+      // Validasi E.164 (tanpa +): max 15 digit, minimal masuk akal
+      if (
+        finalWaPhone.length < 10 ||
+        finalWaPhone.length > 15 ||
+        !finalWaPhone.startsWith("62")
+      ) {
+        alert("No WhatsApp tidak valid.\nGunakan format 62xxxxxxxxxxx (tanpa + dan tanpa spasi).");
+        console.warn("[WA_FINAL] invalid phone -> STOP:", finalWaPhone);
 
+        if (waPhoneInputEl) {
+          waPhoneInputEl.focus();
+          try {
+            waPhoneInputEl.scrollIntoView({ behavior: "smooth", block: "center" });
+          } catch (_) {}
+        }
+        return; // STOP proses pembayaran
+      }
 
+      // simpan untuk mempercepat input berikutnya
+      localStorage.setItem("pos_last_wa_phone", finalWaPhone);
 
-  } catch (err) {
-    console.error("❌ processPayment error:", err);
+      // simpan target untuk Tahap 7 (buka WA)
+      window.__POS_WA_TARGET_PHONE = finalWaPhone;
 
-    CURRENT_SALESORDER_NO = null;
-    localStorage.removeItem("pos_salesorder_no");
-    updateOrderNumberUI();
+      console.log("[WA_FINAL] target phone ->", finalWaPhone);
 
-    alert("Gagal menyimpan transaksi.\nNomor order di-reset.\nSilakan coba lagi.");
+      // === WA OPEN (TAHAP 7) ===
+      // sementara: pakai data minimal dari state saat ini
+      try {
+        const receiptData = {
+          receipt_no: (typeof CURRENT_ORDER_NO !== "undefined" ? CURRENT_ORDER_NO : "") || "",
+          date_str: new Date().toLocaleString("id-ID"),
+          cashier_name: (typeof CASHIER_NAME !== "undefined" ? CASHIER_NAME : "") || "",
+          customer_name: (ACTIVE_CUSTOMER?.contact_name || "Pelanggan Umum"),
+          items: (cart || []).map(it => ({
+            name: it.name || it.product_name || it.product || it.sku || "Item",
+            qty: it.qty ?? it.quantity ?? 1,
+            price: it.price ?? it.unit_price ?? 0,
+            subtotal: (it.subtotal != null)
+              ? it.subtotal
+              : ((it.qty ?? it.quantity ?? 1) * (it.price ?? it.unit_price ?? 0))
+          })),
+          total: (typeof calcTotal === "function") ? calcTotal() : null,
+          paid: (() => {
+            const cashEl = document.getElementById("cashInput");
+            const v = cashEl ? Number(cashEl.value || 0) : null;
+            return isNaN(v) ? null : v;
+          })(),
+          change: (() => {
+            // changeOutput format "Rp 0" -> kita skip parse rumit dulu
+            return null;
+          })()
+        };
+
+        const text = buildWaReceiptText(receiptData);
+        openWhatsAppWithText(finalWaPhone, text);
+      } catch (e) {
+        console.error("[WA_OPEN] failed:", e);
+      }
+    }
+
+    // ==============================
+    // OFFLINE MODE: SIMPAN LOKAL SAJA
+    // ==============================
+    if (!isOnline()) {
+      const offlineOrder = {
+        local_order_no: CURRENT_LOCAL_ORDER_NO || generateLocalOrderNo(),
+        cashier_id: CASHIER_ID,
+        cashier_name: CASHIER_NAME,
+        created_at: new Date().toISOString(),
+        customer: ACTIVE_CUSTOMER,
+        cart: cart,
+        payments: PAYMENT_LINES,
+        total: calcTotal(),
+        status: "OFFLINE_DRAFT"
+      };
+
+      const key = "pos_offline_orders_v1";
+      const list = JSON.parse(localStorage.getItem(key) || "[]");
+      list.push(offlineOrder);
+      localStorage.setItem(key, JSON.stringify(list));
+
+      // cetak struk pakai nomor LOCAL
+      generateReceiptData(
+        offlineOrder.local_order_no,
+        cart,
+        PAYMENT_LINES,
+        {
+          customer_name: ACTIVE_CUSTOMER?.contact_name || "UMUM",
+          cashier_name: CASHIER_NAME,
+          transaction_date: offlineOrder.created_at,
+          grand_total: offlineOrder.total
+        },
+        { fromPayment: true }
+      );
+
+      resetAll();
+      alert("⚠️ Transaksi disimpan OFFLINE.\nAkan disinkronkan saat online.");
+      return;
+    }
+
+    // ======================
+    // ONLINE MODE (Supabase)
+    // ======================
+    try {
+      // ✅ 1. PASTIKAN item_id SEMUA VALID
+      await hydrateCartItemIds();
+
+      // ✅ 2. SIMPAN HEADER
+      const order = await saveSalesOrderHeader();
+
+      // ✅ 3. SIMPAN ITEMS
+      await saveSalesOrderItems(order.salesorder_no);
+
+      // ✅ 4. SIMPAN PAYMENTS
+      await saveSalesOrderPayments(order.salesorder_no);
+
+      // hapus dari transaksi tersimpan (jika ada)
+      removeCurrentHoldIfAny();
+
+      // cetak struk (print otomatis ada di dalamnya)
+      generateReceiptData(
+        order.salesorder_no,
+        cart,
+        PAYMENT_LINES,
+        order,
+        { fromPayment: true }
+      );
+
+      // reset transaksi SETELAH print dipanggil
+      resetAll();
+
+    } catch (err) {
+      console.error("❌ processPayment error:", err);
+
+      CURRENT_SALESORDER_NO = null;
+      localStorage.removeItem("pos_salesorder_no");
+      updateOrderNumberUI();
+
+      alert("Gagal menyimpan transaksi.\nNomor order di-reset.\nSilakan coba lagi.");
+      return;
+    }
+
+  } finally {
+    // ✅ WAJIB: biar gak nyangkut kalau ada return di tengah
+    window.__POS_PAY_LOCK = false;
   }
 }
 
@@ -2647,7 +2931,17 @@ function normalizePaymentsForReceipt(payments){
   });
 }
 
-function generateReceiptData(orderNo, items, payments, header){
+function generateReceiptData(orderNo, items, payments, header, opts = {}){
+	  // ===== SKIP POPUP STRUK kalau WA mode (khusus dari pembayaran) =====
+  if (opts.fromPayment) {
+    const chk = document.getElementById("chkSendWaReceipt");
+    const isWaMode = chk ? chk.checked : false;
+    if (isWaMode) {
+      console.log("[RECEIPT_UI] skip popup because WA mode");
+      return;
+    }
+  }
+
   const paperClass = RECEIPT_PAPER === "80" ? "receipt-80" : "receipt-58";
 const custNameRaw  = header?.customer_name || "";
 const custPhoneRaw = header?.shipping_phone || "";
@@ -2682,6 +2976,12 @@ const cashierName =
       </div>
     `;
   }).join("");
+const chk = document.getElementById("chkSendWaReceipt");
+const isWaMode = chk ? chk.checked : false;
+if (isWaMode) {
+  console.log("[RECEIPT_UI] skip popup because WA mode");
+  return;
+}
 
   const payNorm = normalizePaymentsForReceipt(payments);
   const paymentHtml = payNorm.map(p => `
@@ -2748,7 +3048,9 @@ ${(STORE_NOTE_2 || "").trim() ? `<div class="r-center" style="font-size:9px;">${
   document.getElementById("receiptContent").innerHTML = html;
   document.getElementById("receiptModal").style.display = "flex";
 
-  setTimeout(() => { window.print(); }, 300);
+ setTimeout(() => { window.print(); }, 300);
+
+
 }
 
 /* CLOSE STRUK */
@@ -4511,5 +4813,23 @@ if (holdToolbarButtons[1]) holdToolbarButtons[1].setAttribute("onclick", "closeH
 document.addEventListener("DOMContentLoaded", () => {
   removeSwitchCashierUI();
   loadAndRenderCashiers();
-});
 
+  // === WA RECEIPT CHECKBOX LISTENER (TAHAP 1) ===
+  const chkSendWaReceipt = document.getElementById("chkSendWaReceipt");
+
+  if (chkSendWaReceipt) {
+    const savedWa = localStorage.getItem("pos_send_wa_receipt");
+    if (savedWa !== null) chkSendWaReceipt.checked = (savedWa === "1");
+
+    chkSendWaReceipt.addEventListener("change", function () {
+      console.log("[WA_CHECKBOX] changed ->", chkSendWaReceipt.checked);
+      localStorage.setItem("pos_send_wa_receipt", chkSendWaReceipt.checked ? "1" : "0");
+      refreshWaPhoneUI();
+    });
+
+    // opsional tapi bagus: sekali refresh saat awal
+    refreshWaPhoneUI();
+  } else {
+    console.warn("[WA_CHECKBOX] element not found");
+  }
+});
