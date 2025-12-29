@@ -1,8 +1,6 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-
-
 <meta charset="UTF-8" />
 <title>Tasaji POS</title>
 <link rel="icon" type="image/png" href="favicon.png?v=2">
@@ -346,10 +344,11 @@
             </div>
 
             <div class="txn-actions" id="txnDetailActions" style="display:none;">
-  <button class="btn-outline">🖨 Cetak Ulang Struk</button>
-  <button class="btn-outline">☁️ Sync Jubelio</button>
-  <button class="btn-primary">🔁 Pesan Ulang</button>
+  <button class="btn-outline" onclick="txnReprintReceipt()">🖨 Cetak Ulang Struk</button>
+  <button class="btn-danger" id="btnTxnCancel" onclick="txnCancelTransaction()">⛔ Batalkan</button>
+  <button class="btn-primary" onclick="txnReorder()">🔁 Pesan Ulang</button>
 </div>
+
 
           </div>
         </div>
@@ -428,29 +427,22 @@
 
       <div class="set-card">
         <h3>Sinkronisasi Produk</h3>
-
         <div class="set-row">
           <label>Auto Sync (jam)</label>
           <input type="number" id="setAutoSyncHours" min="1">
         </div>
-
         <div class="small-note">
           Otomatis sync jika cache lebih lama dari jam ini.
         </div>
-
         <button class="btn-primary">
           🔄 Sync Sekarang
         </button>
 
         <div id="syncStatus" class="sync-status"></div>
       </div>
-
     </div>
-
   </div>
 </section>
-
-
 <!-- =================================================
      PANEL LAPORAN
 ================================================== -->
@@ -645,9 +637,8 @@
   </div>
 </div>
 
+<script src="./auth.js"></script>
 
-
-<script src="auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="index.js"></script>
 
