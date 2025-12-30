@@ -320,6 +320,196 @@ let CUSTOMER_LIST = [];
 let ACTIVE_CUSTOMER = null;
 let PRICE_MAP = {};
 let PACKING_MAP = {};
+/* =====================================================
+   HARGA TOOLTIP (BUKU HARGA) — STEP 2
+   Hover di harga => tooltip kiri-bawah berisi semua buku harga.
+   ===================================================== */
+
+let PRICE_TOOLTIP_EL = null;
+let PRICE_TOOLTIP_HIDE_TIMER = null;
+let PRICE_TOOLTIP_ACTIVE_TARGET = null;
+
+const PRICE_BOOK_ORDER = ["umum", "member", "reseller", "agen", "lv1_pcs"];
+const PRICE_BOOK_LABEL = {
+  umum: "Harga Umum",
+  member: "Harga Member",
+  reseller: "Harga Reseller",
+  agen: "Harga Agen",
+  lv1_pcs: "Harga Kartonan",
+};
+
+function ensurePriceTooltipEl() {
+  if (PRICE_TOOLTIP_EL) return PRICE_TOOLTIP_EL;
+
+  const el = document.createElement("div");
+  el.id = "priceTooltip";
+  el.className = "price-tooltip";
+  el.style.display = "none";
+  el.innerHTML = `
+    <div class="price-tooltip__title">Harga Bertingkat</div>
+    <div class="price-tooltip__body">
+      <div class="price-tooltip__loading">Memuat...</div>
+    </div>
+  `;
+  document.body.appendChild(el);
+
+  // Hover di tooltip jangan langsung hilang
+  el.addEventListener("mouseenter", () => cancelHidePriceTooltip());
+  el.addEventListener("mouseleave", () => scheduleHidePriceTooltip());
+
+  PRICE_TOOLTIP_EL = el;
+  return el;
+}
+
+function cancelHidePriceTooltip() {
+  if (PRICE_TOOLTIP_HIDE_TIMER) {
+    clearTimeout(PRICE_TOOLTIP_HIDE_TIMER);
+    PRICE_TOOLTIP_HIDE_TIMER = null;
+  }
+}
+
+function scheduleHidePriceTooltip(delay = 120) {
+  cancelHidePriceTooltip();
+  PRICE_TOOLTIP_HIDE_TIMER = setTimeout(() => {
+    hidePriceTooltip();
+  }, delay);
+}
+
+async function ensurePriceDataForTooltip() {
+  try {
+    if (!PRICE_MAP || Object.keys(PRICE_MAP).length === 0) {
+      await loadPriceMap();
+    }
+  } catch (_) {}
+
+  try {
+    if (!PACKING_MAP || Object.keys(PACKING_MAP).length === 0) {
+      await loadPackingMap();
+    }
+  } catch (_) {}
+}
+
+function buildPriceTooltipHTML(itemCode) {
+  const prices = (PRICE_MAP && PRICE_MAP[itemCode]) ? PRICE_MAP[itemCode] : {};
+  const pcsPerKarton = (PACKING_MAP && PACKING_MAP[itemCode]) ? PACKING_MAP[itemCode] : 0;
+
+  const rows = PRICE_BOOK_ORDER.map((cat) => {
+    const labelBase = PRICE_BOOK_LABEL[cat] || cat;
+    const priceVal = prices ? prices[cat] : undefined;
+    const priceText = (priceVal !== undefined && priceVal !== null) ? formatRupiah(priceVal) : "-";
+
+    if (cat === "lv1_pcs") {
+      const label = pcsPerKarton ? `${labelBase} (isi ${pcsPerKarton})` : labelBase;
+      return `<div class="price-tooltip__row"><span>${label}</span><b>${priceText}</b></div>`;
+    }
+
+    return `<div class="price-tooltip__row"><span>${labelBase}</span><b>${priceText}</b></div>`;
+  }).join("");
+
+  return `
+    <div class="price-tooltip__rowhead">${itemCode}</div>
+    <div class="price-tooltip__divider"></div>
+    ${rows}
+  `;
+}
+
+function positionPriceTooltip(targetEl, tooltipEl) {
+  const rect = targetEl.getBoundingClientRect();
+  const gap = 8;
+
+  tooltipEl.style.display = "block";
+  tooltipEl.style.visibility = "hidden";
+  tooltipEl.style.left = "0px";
+  tooltipEl.style.top = "0px";
+
+  const w = tooltipEl.offsetWidth;
+  const h = tooltipEl.offsetHeight;
+
+  // WAJIB: kiri-bawah
+  let left = rect.left - w - gap;
+  let top = rect.bottom + gap;
+
+  // Anti hilang (clamp). TIDAK flip ke kanan/atas.
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+
+  tooltipEl.style.left = `${Math.round(left)}px`;
+  tooltipEl.style.top = `${Math.round(top)}px`;
+  tooltipEl.style.visibility = "visible";
+}
+
+async function showPriceTooltip(targetEl) {
+  if (!targetEl) return;
+
+  // Jika sedang edit price manual (ada input), jangan ganggu
+  if (targetEl.querySelector && targetEl.querySelector("input")) return;
+
+  const itemCode = targetEl.getAttribute("data-item-code");
+  if (!itemCode) return;
+
+  const tooltipEl = ensurePriceTooltipEl();
+  PRICE_TOOLTIP_ACTIVE_TARGET = targetEl;
+
+  tooltipEl.querySelector(".price-tooltip__title").textContent = "Harga Bertingkat";
+  tooltipEl.querySelector(".price-tooltip__body").innerHTML = `<div class="price-tooltip__loading">Memuat...</div>`;
+  positionPriceTooltip(targetEl, tooltipEl);
+
+  await ensurePriceDataForTooltip();
+
+  // Kalau user sudah pindah hover sebelum load selesai
+  if (PRICE_TOOLTIP_ACTIVE_TARGET !== targetEl) return;
+
+  tooltipEl.querySelector(".price-tooltip__body").innerHTML = buildPriceTooltipHTML(itemCode);
+
+  // Re-position setelah konten berubah (tinggi/lebar bisa berubah)
+  positionPriceTooltip(targetEl, tooltipEl);
+}
+
+function hidePriceTooltip() {
+  cancelHidePriceTooltip();
+  if (!PRICE_TOOLTIP_EL) return;
+  PRICE_TOOLTIP_EL.style.display = "none";
+  PRICE_TOOLTIP_ACTIVE_TARGET = null;
+}
+
+function bindPriceTooltipEvents() {
+  // Hanya 1x bind
+  if (window.__PRICE_TOOLTIP_BINDED__) return;
+  window.__PRICE_TOOLTIP_BINDED__ = true;
+
+  document.addEventListener("mouseover", (e) => {
+    const target = e.target.closest(".js-price-hover");
+    if (!target) return;
+    cancelHidePriceTooltip();
+    showPriceTooltip(target);
+  });
+
+  document.addEventListener("mouseout", (e) => {
+    const from = e.target.closest(".js-price-hover");
+    if (!from) return;
+
+    const toEl = e.relatedTarget;
+    if (PRICE_TOOLTIP_EL && toEl && PRICE_TOOLTIP_EL.contains(toEl)) return;
+
+    scheduleHidePriceTooltip();
+  });
+
+  // Kalau scroll/resize saat tooltip tampil, tetap nempel kiri-bawah target (clamp)
+  window.addEventListener("scroll", () => {
+    if (!PRICE_TOOLTIP_EL) return;
+    if (PRICE_TOOLTIP_EL.style.display === "none") return;
+    if (!PRICE_TOOLTIP_ACTIVE_TARGET) return;
+    positionPriceTooltip(PRICE_TOOLTIP_ACTIVE_TARGET, PRICE_TOOLTIP_EL);
+  }, true);
+
+  window.addEventListener("resize", () => {
+    if (!PRICE_TOOLTIP_EL) return;
+    if (PRICE_TOOLTIP_EL.style.display === "none") return;
+    if (!PRICE_TOOLTIP_ACTIVE_TARGET) return;
+    positionPriceTooltip(PRICE_TOOLTIP_ACTIVE_TARGET, PRICE_TOOLTIP_EL);
+  });
+}
+
 let CURRENT_SALESORDER_NO = null;
 let CURRENT_LOCAL_ORDER_NO = null;     // ✅ nomor offline (local)
 let CURRENT_ORDER_MODE = "online";     // "online" | "offline"
@@ -1590,7 +1780,7 @@ if (!outOfStock || !requireStock) {
         <div class="product-name">${p.item_name}</div>
       </div>
       <div class="product-footer">
-        <div class="product-price">
+        <div class="product-price js-price-hover" data-item-code="${p.item_code}">
   ${formatRupiah(getFinalPrice(p.item_code, 1))}
 </div>
 
@@ -1883,7 +2073,7 @@ return;
     const isManual = i.price_manual === true;
 
     el.innerHTML=`
-      <div class="cart-item-price"
+     <div class="cart-item-price js-price-hover" data-item-code="${i.code}"
            onclick="enablePriceEdit('${i.code}')"
            style="cursor:pointer; ${isManual ? "color:#e53935;font-weight:800;" : ""}"
            title="Klik untuk edit harga manual">
@@ -4270,6 +4460,7 @@ applyBestPeriodUI();
 
   // apply saat load
   applyProductViewMode();
+bindPriceTooltipEvents();
 
   updateSyncStatus(`Auto sync: tiap ${AUTO_SYNC_HOURS} jam`);
   initReportUI();
