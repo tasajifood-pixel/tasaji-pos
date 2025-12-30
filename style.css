@@ -1,4 +1,3 @@
-
 /* =====================================================
    ROOT SETTINGS (1x saja)
 ===================================================== */
@@ -2081,4 +2080,58 @@ body{
 }
 .txn-detail #txnDetailActions .btn-primary:hover{
   background: #fffbeb !important;
+}
+
+/* =====================================================
+   FINAL OVERRIDE: TXN DETAIL ACTIONS (2x2 grid, rapi, no clipping)
+===================================================== */
+#txnDetailActions{
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  align-items: stretch !important;
+  justify-items: stretch !important;
+  padding: 12px 12px !important;
+  margin-top: 12px !important;
+}
+
+@media (min-width: 900px){
+  #txnDetailActions{
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+}
+
+#txnDetailActions > button,
+#txnDetailActions .btn-outline,
+#txnDetailActions .btn-danger,
+#txnDetailActions .btn-primary,
+#txnDetailActions .btn-secondary{
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  box-sizing: border-box !important;
+
+  width: 100% !important;
+  min-width: 0 !important;
+
+  height: 44px !important;
+  min-height: 44px !important;
+
+  padding: 0 10px !important;
+  border-radius: 14px !important;
+
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  line-height: 44px !important;
+
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+
+  box-shadow: none !important;
+  outline: none !important;
 }
