@@ -2135,3 +2135,65 @@ body{
   box-shadow: none !important;
   outline: none !important;
 }
+/* ================================
+   PRICE TOOLTIP (BUKU HARGA)
+   ================================ */
+.price-tooltip {
+  position: fixed;
+  z-index: 999999;
+  min-width: 260px;
+  max-width: 360px;
+  background: #fff;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 10px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.12);
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.price-tooltip__title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.price-tooltip__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.price-tooltip__rowhead {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.price-tooltip__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.price-tooltip__row span {
+  opacity: 0.9;
+}
+
+.price-tooltip__row b {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.price-tooltip__divider {
+  height: 1px;
+  background: rgba(0,0,0,0.08);
+  margin: 2px 0;
+}
+
+.price-tooltip__loading {
+  font-size: 13px;
+  opacity: 0.7;
+}
