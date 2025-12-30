@@ -308,6 +308,11 @@ let filters = {
 };
 
 let cart = [];
+// ================================
+// RESEND WA (TAHAP 9) - TXN CACHE
+// ================================
+let CURRENT_TXN_DETAIL = null; // { header, items, payments, isOffline }
+
 let selectedPaymentMethod = null;
 let PAYMENT_LINES = []; // [{ method:'cash', label:'Kas', amount:20000 }]
 
@@ -2419,6 +2424,107 @@ function normalizeWaPhone(raw){
 
   return s;
 }
+// ================================
+// RESEND WA (TAHAP 9) - HELPERS
+// ================================
+function getTxnPhoneCandidate(header, isOffline) {
+  if (!header) return "";
+
+  // ONLINE: biasanya pakai shipping_phone / customer_name
+  // OFFLINE: biasanya struktur beda (dari localStorage)
+  if (isOffline) {
+    const p = header.customer?.phone || header.shipping_phone || header.phone || "";
+    return String(p || "").trim();
+  }
+
+  const p = header.shipping_phone || header.phone || "";
+  return String(p || "").trim();
+}
+
+function buildReceiptDataFromTxn(header, items, payments, isOffline) {
+  // header minimal yang kita butuhkan
+  const orderNo =
+    (isOffline ? (header.local_order_no || header.salesorder_no || "") : (header.salesorder_no || header.local_order_no || "")) || "";
+
+  const trxDate =
+    header.transaction_date ||
+    header.created_at ||
+    header.date ||
+    null;
+
+  const cashierName = header.cashier_name || header.cashierName || "Kasir";
+  const customerName =
+    header.customer_name ||
+    header.customer?.contact_name ||
+    header.customer?.name ||
+    header.customer_name_display ||
+    "Pelanggan Umum";
+
+  const safeItems = (items || []).map(it => {
+    const qty = Number(it.qty ?? it.qty_in_base ?? it.quantity ?? 1) || 1;
+    const price = Number(it.price ?? it.unit_price ?? 0) || 0;
+    const subtotal = (it.subtotal != null) ? Number(it.subtotal) : (qty * price);
+
+    return {
+      name: it.name || it.description || it.product_name || it.product || it.sku || "Item",
+      qty,
+      price,
+      subtotal
+    };
+  });
+
+  const total =
+    Number(header.grand_total ?? header.total ?? header.sub_total ?? 0) ||
+    safeItems.reduce((s, i) => s + Number(i.subtotal || 0), 0);
+
+  const paid = (payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+
+  // change sederhana: kalau ada cash dan bayar > total
+  const hasCash = (payments || []).some(p => String(p.payment_method || p.method || "").toLowerCase() === "cash");
+  const change = (hasCash && paid > total) ? (paid - total) : 0;
+
+  return {
+    receipt_no: orderNo,
+    date_str: trxDate ? formatDateID(trxDate) : new Date().toLocaleString("id-ID"),
+    cashier_name: cashierName,
+    customer_name: customerName,
+    items: safeItems,
+    total,
+    paid,
+    change
+  };
+}
+
+function openTxnReceiptToWA(header, items, payments, isOffline) {
+  // 1) ambil nomor kandidat dari transaksi
+  const phoneCandidateRaw = getTxnPhoneCandidate(header, isOffline);
+  const phoneCandidate = normalizeWaPhone(phoneCandidateRaw);
+
+  // 2) kalau kosong -> minta input manual (simple & aman, tidak ganggu layout mobile)
+  let finalPhone = phoneCandidate;
+  if (!finalPhone) {
+    const manual = prompt("Masukkan No WhatsApp tujuan (format 62xxxxxxxxxxx, tanpa +):", "");
+    finalPhone = normalizeWaPhone(manual || "");
+  }
+
+  // 3) validasi final
+  if (!finalPhone) {
+    alert("No WhatsApp belum diisi. Batal kirim ulang.");
+    return;
+  }
+  if (finalPhone.length < 10 || finalPhone.length > 15 || !finalPhone.startsWith("62")) {
+    alert(" reminds: No WhatsApp tidak valid. Gunakan format 62xxxxxxxxxxx (tanpa + dan tanpa spasi).");
+    return;
+  }
+
+  // 4) build text nota & buka WA
+  const receiptData = buildReceiptDataFromTxn(header, items, payments, isOffline);
+  const text = buildWaReceiptText(receiptData);
+
+  console.log("[WA_RESEND] target ->", finalPhone, "| order ->", receiptData.receipt_no);
+  openWhatsAppWithText(finalPhone, text);
+}
+
 function buildWaReceiptText(receiptData) {
   // receiptData: kita coba pakai variabel struk yang sudah ada di project
   // fallback aman kalau beberapa field tidak ada
@@ -2684,17 +2790,18 @@ async function processPayment() {
 
       // cetak struk pakai nomor LOCAL
       generateReceiptData(
-        offlineOrder.local_order_no,
-        cart,
-        PAYMENT_LINES,
-        {
-          customer_name: ACTIVE_CUSTOMER?.contact_name || "UMUM",
-          cashier_name: CASHIER_NAME,
-          transaction_date: offlineOrder.created_at,
-          grand_total: offlineOrder.total
-        },
-        { fromPayment: true }
-      );
+  t.local_order_no,
+  t.cart,
+  t.payments,
+  {
+    customer_name: t.customer?.contact_name || "UMUM",
+    cashier_name: t.cashier_name,
+    transaction_date: t.created_at,
+    grand_total: t.total
+  },
+  { fromReprint: true, forcePrint: true }
+);
+
 
       resetAll();
       alert("⚠️ Transaksi disimpan OFFLINE.\nAkan disinkronkan saat online.");
@@ -2933,14 +3040,7 @@ function normalizePaymentsForReceipt(payments){
 
 function generateReceiptData(orderNo, items, payments, header, opts = {}){
 	  // ===== SKIP POPUP STRUK kalau WA mode (khusus dari pembayaran) =====
-  if (opts.fromPayment) {
-    const chk = document.getElementById("chkSendWaReceipt");
-    const isWaMode = chk ? chk.checked : false;
-    if (isWaMode) {
-      console.log("[RECEIPT_UI] skip popup because WA mode");
-      return;
-    }
-  }
+ 
 
   const paperClass = RECEIPT_PAPER === "80" ? "receipt-80" : "receipt-58";
 const custNameRaw  = header?.customer_name || "";
@@ -2978,10 +3078,15 @@ const cashierName =
   }).join("");
 const chk = document.getElementById("chkSendWaReceipt");
 const isWaMode = chk ? chk.checked : false;
-if (isWaMode) {
+
+// ✅ kalau dari REPRINT / force print → abaikan WA mode
+const forcePrint = !!(opts && (opts.fromReprint || opts.forcePrint));
+
+if (isWaMode && !forcePrint) {
   console.log("[RECEIPT_UI] skip popup because WA mode");
   return;
 }
+
 
   const payNorm = normalizePaymentsForReceipt(payments);
   const paymentHtml = payNorm.map(p => `
@@ -3578,8 +3683,11 @@ function selectOfflineTransaction(localNo){
 
   txnDetailActions.style.display = "flex";
   txnDetailActions.innerHTML = `
-    <button class="btn-outline" onclick="txnReprintOffline('${t.local_order_no}')">🖨 Cetak Ulang</button>
-  `;
+  <button class="btn-outline" onclick="txnReprintOffline('${t.local_order_no}')">🖨️ Cetak Ulang</button>
+
+  <button class="btn-outline" onclick="txnResendWaOffline('${t.local_order_no}')">📩 Kirim Ulang WA</button>
+`;
+
 }
 function txnReprintOffline(localNo){
   const list = loadOfflineTransactions();
@@ -3595,8 +3703,51 @@ function txnReprintOffline(localNo){
       cashier_name: t.cashier_name,
       transaction_date: t.created_at,
       grand_total: t.total
-    }
+    },
+    // ✅ FIX: force print walau WA mode ON
+    { fromReprint: true, forcePrint: true }
   );
+}
+
+function txnResendWaOffline(localNo){
+  const list = loadOfflineTransactions(); // atau loadOfflineTransactions() sesuai yg kamu pakai
+  const t = list.find(x => x.local_order_no === localNo);
+  if(!t) return;
+
+  // ambil target WA: prioritas customer.phone, kalau kosong pakai last input
+  const memberPhone = normalizeWaPhone(t.customer?.phone || "");
+  const lastPhone = normalizeWaPhone(localStorage.getItem("pos_last_wa_phone") || "");
+  const finalWaPhone = memberPhone || lastPhone;
+
+  if(!finalWaPhone){
+    alert("No WhatsApp tidak ada.\nIsi dulu nomor WA di transaksi baru (guest) supaya tersimpan.");
+    return;
+  }
+
+  // bentuk receiptData sederhana
+  const receiptData = {
+    receipt_no: t.local_order_no,
+    date_str: t.created_at ? new Date(t.created_at).toLocaleString("id-ID") : new Date().toLocaleString("id-ID"),
+    cashier_name: t.cashier_name || "",
+    customer_name: t.customer?.contact_name || "Pelanggan Umum",
+    items: (t.cart || []).map(it => ({
+      name: it.name || it.product_name || it.product || it.sku || "Item",
+      qty: it.qty ?? it.quantity ?? 1,
+      price: it.price ?? it.unit_price ?? 0,
+      subtotal: (it.subtotal != null) ? it.subtotal : ((it.qty ?? it.quantity ?? 1) * (it.price ?? it.unit_price ?? 0))
+    })),
+    total: Number(t.total || 0),
+    paid: null,
+    change: null
+  };
+
+  try{
+    const text = buildWaReceiptText(receiptData);
+    openWhatsAppWithText(finalWaPhone, text);
+  }catch(e){
+    console.error("[WA_RESEND_OFFLINE] failed:", e);
+    alert("Gagal bikin text WA. Cek console.");
+  }
 }
 
 async function selectTransaction(orderNo){
@@ -3908,7 +4059,36 @@ function txnReprint(){
     qty: i.qty_in_base,
     price: i.price
   }));
-  generateReceiptData(t.salesorder_no, items, t.payments, t.header);
+
+  // ✅ FIX: force print walau WA mode ON
+  generateReceiptData(t.salesorder_no, items, t.payments, t.header, {
+    fromReprint: true,
+    forcePrint: true
+  });
+}
+
+// alias supaya tombol HTML lama tetap jalan
+function txnReprintReceipt(){
+  return txnReprint();
+}
+
+// Kirim ulang struk via WhatsApp untuk transaksi ONLINE (yang sedang dibuka di detail)
+function txnResendWaReceipt(){
+  if(!TXN_SELECTED || !TXN_SELECTED.header){
+    alert("Pilih transaksi dulu.");
+    return;
+  }
+  try{
+    openTxnReceiptToWA(
+      TXN_SELECTED.header,
+      TXN_SELECTED.items || [],
+      TXN_SELECTED.payments || [],
+      false
+    );
+  }catch(e){
+    console.error("[WA_RESEND] failed:", e);
+    alert("Gagal menyiapkan struk WA. Cek console.");
+  }
 }
 
 async function txnReorder(){
