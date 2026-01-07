@@ -23,7 +23,6 @@ const sb = window.supabase.createClient(
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZwamZkeHBkYXF0b3Bqb3Jxb29kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczMDkwNjUsImV4cCI6MjA4MjY2OTA2NX0.x8KgYQcSm9EMAk_vDzfDIYw4HY0vQnL4Sl_dyQ2lQN0"
 );
 
-
 /* =====================================================
    CASHIER (Supabase-driven)
    - List kasir di welcomeScreen diambil dari Supabase (table: pos_cashiers).
@@ -318,6 +317,28 @@ let PAYMENT_LINES = []; // [{ method:'cash', label:'Kas', amount:20000 }]
 
 let CUSTOMER_LIST = [];
 let ACTIVE_CUSTOMER = null;
+// ===== STEP 3: Price history (P prev) =====
+let LAST_PRICE_HISTORY = {}; // { [item_id]: { pPrev:number, dateIso:string } }
+// ✅ COST HISTORY (baru)
+let COST_HISTORY_MAP = {}; // { [itemId]: { now:{c,dt}, prev:{c,dt} } }
+
+let _histTimer = null;
+let _histLastKey = null;
+// ===== MODAL STEP1A: cost_now dari PO terbaru =====
+let COST_NOW_MAP = {};     // { [itemId]: { cNow, dateIso } }
+let _costLastKey = "";
+let _costTimer = null;
+
+function formatDateDDMMYYYY(iso){
+  if(!iso) return "-";
+  const d = new Date(iso);
+  if(Number.isNaN(d.getTime())) return "-";
+  const dd = String(d.getDate()).padStart(2,"0");
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const yy = d.getFullYear();
+  return `${dd}/${mm}/${yy}`;
+}
+
 let PRICE_MAP = {};
 let PACKING_MAP = {};
 /* =====================================================
@@ -1965,6 +1986,183 @@ function enablePriceEdit(code){
     inp.select();
   }
 }
+function ensurePriceEditModal(){
+  if(document.getElementById("priceEditModal")) return;
+
+  const m = document.createElement("div");
+  m.id = "priceEditModal";
+  m.innerHTML = `
+  <div class="pem-backdrop" onclick="closePriceEditModal()"></div>
+
+  <div class="pem-card" role="dialog" aria-modal="true">
+    <div class="pem-head">
+      <div class="pem-title">Harga & Modal</div>
+      <button class="pem-close" type="button" onclick="closePriceEditModal()">×</button>
+    </div>
+
+    <div class="pem-row"><b>Item:</b> <span id="pemItemName">-</span></div>
+    <div class="pem-row"><b>Code:</b> <span id="pemItemCode">-</span></div>
+
+    <hr style="border:none;border-top:1px solid #eee;margin:10px 0;" />
+
+    <div class="pem-row"><b>P now:</b> <span id="pemPNow">-</span></div>
+    <div class="pem-row"><b>P prev:</b> <span id="pemPPrev">-</span></div>
+
+    <div class="pem-row"><b>C now:</b> <span id="pemCNow">-</span></div>
+    <div class="pem-row"><b>C prev:</b> <span id="pemCPrev">-</span></div>
+
+    <hr style="border:none;border-top:1px solid #eee;margin:10px 0;" />
+
+    <div class="pem-row"><b>Edit Harga Jual</b></div>
+    <div class="pem-row pem-muted" style="margin-top:-2px;">
+      Isi harga untuk override (manual). Kosong/0 = balik ke harga auto.
+    </div>
+
+    <div class="pem-row" style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+      <input
+        id="pemInputPrice"
+        type="number"
+        inputmode="numeric"
+        style="flex:1; padding:8px 10px; border:1px solid #eee; border-radius:10px;"
+        placeholder="mis. 25000"
+      />
+      <button
+        type="button"
+        style="padding:8px 12px; border:1px solid #eee; border-radius:10px; background:#fff; cursor:pointer;"
+        onclick="pemSaveManualPrice()"
+      >Simpan</button>
+      <button
+        type="button"
+        style="padding:8px 12px; border:1px solid #eee; border-radius:10px; background:#fff; cursor:pointer;"
+        onclick="pemResetAutoPrice()"
+      >Reset</button>
+    </div>
+
+    <div class="pem-row pem-muted" style="margin-top:10px;">
+      Tip: P prev = riwayat harga jual terakhir. C now/C prev = modal PO terbaru & sebelumnya.
+    </div>
+  </div>
+`;
+
+  document.body.appendChild(m);
+
+  // ESC untuk tutup
+  document.addEventListener("keydown", (e)=>{
+    if(e.key === "Escape") closePriceEditModal();
+  });
+}
+
+// kalau history/cost belum ready, refresh biar modal langsung kebaca
+try { scheduleRefreshHistoryIndicators(); } catch(_) {}
+try { scheduleRefreshCostIndicators(); } catch(_) {}
+
+function openPriceEditModal(itemCode){
+  ensurePriceEditModal();
+
+  const m = document.getElementById("priceEditModal");
+  if(!m) return;
+
+  // tampilkan modal
+  m.style.display = "block";
+m.dataset.itemCode = itemCode || "";
+
+  // cari item di cart
+  const it = (cart || []).find(x => x.code === itemCode);
+  if(!it){
+    document.getElementById("pemItemName").textContent = "-";
+    document.getElementById("pemItemCode").textContent = itemCode || "-";
+    document.getElementById("pemPNow").textContent = "-";
+    document.getElementById("pemPPrev").textContent = "-";
+    document.getElementById("pemCNow").textContent = "-";
+    document.getElementById("pemCPrev").textContent = "-";
+    return;
+  }
+
+  const itemId = Number(it.itemId);
+
+  // isi header modal
+  document.getElementById("pemItemName").textContent = it.name || "-";
+  document.getElementById("pemItemCode").textContent = it.code || "-";
+
+  // P now
+  const pNow = Number(it.price || 0);
+  document.getElementById("pemPNow").textContent = formatRupiah(pNow);
+// isi input edit: kalau manual pakai price sekarang, kalau auto kosongkan biar jelas
+const inp = document.getElementById("pemInputPrice");
+if(inp){
+  inp.value = it.price_manual ? String(Number(it.price || 0)) : "";
+}
+
+  // P prev (dari STEP3 map)
+  const pRec = (LAST_PRICE_HISTORY || {})[itemId];
+  if(pRec && Number(pRec.pPrev || 0) > 0){
+    document.getElementById("pemPPrev").textContent =
+      `${formatRupiah(Number(pRec.pPrev||0))} (${formatDateDDMMYYYY(pRec.dateIso)})`;
+  }else{
+    document.getElementById("pemPPrev").textContent = "-";
+  }
+
+  // C now / C prev (dari PO map — nanti kita isi map-nya)
+  const cRec = (COST_HISTORY_MAP || {})[itemId];
+  if(cRec?.now){
+    document.getElementById("pemCNow").textContent =
+      `${formatRupiah(Number(cRec.now.c || 0))} (${formatDateDDMMYYYY(cRec.now.dt)})`;
+  }else{
+    document.getElementById("pemCNow").textContent = "-";
+  }
+
+  if(cRec?.prev){
+    document.getElementById("pemCPrev").textContent =
+      `${formatRupiah(Number(cRec.prev.c || 0))} (${formatDateDDMMYYYY(cRec.prev.dt)})`;
+  }else{
+    document.getElementById("pemCPrev").textContent = "-";
+  }
+}
+
+
+function closePriceEditModal(){
+  const m = document.getElementById("priceEditModal");
+  if(!m) return;
+  m.style.display = "none";
+}
+function pemSaveManualPrice(){
+  const m = document.getElementById("priceEditModal");
+  if(!m) return;
+
+  const code = m.dataset.itemCode || "";
+  if(!code) return;
+
+  const v = Number(document.getElementById("pemInputPrice")?.value || 0);
+  setManualPrice(code, v);
+
+  // opsional: tetap update cepat (sebelum ditutup)
+  const it = (cart || []).find(x => x.code === code);
+  if(it){
+    document.getElementById("pemPNow").textContent = formatRupiah(Number(it.price || 0));
+  }
+
+  closePriceEditModal(); // ✅ tambah ini
+}
+
+
+function pemResetAutoPrice(){
+  const m = document.getElementById("priceEditModal");
+  if(!m) return;
+
+  const code = m.dataset.itemCode || "";
+  if(!code) return;
+
+  setManualPrice(code, 0);
+  const it = (cart || []).find(x => x.code === code);
+  if(it){
+    document.getElementById("pemInputPrice").value = "";
+    document.getElementById("pemPNow").textContent = formatRupiah(Number(it.price || 0));
+  }
+
+  closePriceEditModal(); // ✅ tambah ini
+}
+
+
 
 function onPriceInputKey(e, code){
   if(e.key === "Enter"){
@@ -2050,35 +2248,45 @@ function saveQtyInput(inputEl, code){
 }
 
 /* ✅ BARU function renderCart() */
+/* ✅ BARU function renderCart() */
 function renderCart(){
-  cartItems.innerHTML="";
+  cartItems.innerHTML = "";
   const total = calcTotal();
   const count = calcItemCount();
 
-  if(!cart.length){
+  // =========================
+  // (A) CART KOSONG
+  // =========================
+  if(!cart || cart.length === 0){
     cartItems.innerHTML = `
       <div style="padding:12px;color:#999;font-size:13px;text-align:center;">
         Belum ada item di transaksi
       </div>
     `;
-    itemCount.textContent=count;
-    cartSubtotal.textContent=formatRupiah(total);
-    cartTotal.textContent=formatRupiah(total);
-return;
+
+    itemCount.textContent = count;
+    cartSubtotal.textContent = formatRupiah(total);
+    cartTotal.textContent = formatRupiah(total);
+
+    // ✅ tetap jalan meski kosong (biar reset indikator/tooltip)
+    if(typeof scheduleRefreshCostIndicators === "function") scheduleRefreshCostIndicators();
+    if(typeof scheduleRefreshHistoryIndicators === "function") scheduleRefreshHistoryIndicators();
+
+    return; // ✅ PENTING: stop di sini
   }
 
+  // =========================
+  // (B) CART ADA ITEM
+  // =========================
   cart.forEach(i=>{
-    const el=document.createElement("div");
-    el.className="cart-item";
-    const isManual = i.price_manual === true;
+    const el = document.createElement("div");
+    el.className = "cart-item";
 
-    el.innerHTML=`
-     <div class="cart-item-price js-price-hover" data-item-code="${i.code}"
-           onclick="enablePriceEdit('${i.code}')"
-           style="cursor:pointer; ${isManual ? "color:#e53935;font-weight:800;" : ""}"
-           title="Klik untuk edit harga manual">
+    el.innerHTML = `
+      <div class="cart-item-price js-price-hover"
+           data-item-code="${i.code}"
+           style="cursor:help; text-decoration:underline dotted;">
         ${formatRupiah(i.price)}
-        ${isManual ? `<span style="font-size:11px;margin-left:6px;">(manual)</span>` : ``}
       </div>
 
       <div class="cart-item-name">${i.name}</div>
@@ -2086,24 +2294,54 @@ return;
 
       <div class="cart-item-actions">
         <button class="qty-btn" onclick="changeQty('${i.code}',-1)">−</button>
-        <div class="qty-value" 
-     onclick="enableQtyEdit('${i.code}')"
-     style="cursor:pointer;"
-     title="Klik untuk input qty manual">
-  ${i.qty}
-</div>
+
+        <div class="qty-value"
+             onclick="enableQtyEdit('${i.code}')"
+             style="cursor:pointer;"
+             title="Klik untuk input qty manual">
+          ${i.qty}
+        </div>
 
         <button class="qty-btn" onclick="changeQty('${i.code}',1)">+</button>
+
+        <!-- status dot -->
+        <span class="risk-dot is-neutral"
+      data-risk-for="${i.code}"
+      title="OK"></span>
+
+
+        <!-- indikator perbandingan harga -->
+        <span class="mini-ico ico-move"
+              data-move-for="${i.code}"
+              title="Prev: - | Now: -">↕</span>
+
+        <!-- indikator cost -->
+        <span class="mini-ico ico-cost"
+              data-cost-indicator-for="${i.code}"
+              title="Prev: - | Now: -">🪙</span>
+
+        <!-- edit -->
+        <button class="cart-icon-btn btn-edit-price"
+                type="button"
+                title="Edit"
+                onclick="openPriceEditModal('${i.code}')">✏️</button>
+
         <button class="btn-delete" onclick="changeQty('${i.code}',-999)">🗑</button>
       </div>
     `;
     cartItems.appendChild(el);
   });
 
-  itemCount.textContent=count;
-  cartSubtotal.textContent=formatRupiah(total);
-  cartTotal.textContent=formatRupiah(total);
+  itemCount.textContent = count;
+  cartSubtotal.textContent = formatRupiah(total);
+  cartTotal.textContent = formatRupiah(total);
+
+  // ✅ WAJIB dipanggil SETELAH DOM cart selesai dibuat
+  if(typeof scheduleRefreshCostIndicators === "function") scheduleRefreshCostIndicators();
+  if(typeof scheduleRefreshHistoryIndicators === "function") scheduleRefreshHistoryIndicators();
 }
+
+
 
 /* =====================================================
    CUSTOMER AUTOCOMPLETE
@@ -2143,6 +2381,349 @@ function searchCustomer() {
 
   dropdown.style.display = "block";
 }
+function scheduleRefreshHistoryIndicators(){
+  if(_histTimer) clearTimeout(_histTimer);
+  _histTimer = setTimeout(()=> refreshHistoryIndicators(), 250);
+}
+
+async function refreshHistoryIndicators(){
+	console.log("[STEP3] VERSION = 2025-12-30-A");
+
+  console.log("[STEP3] refreshHistoryIndicators CALLED");
+  console.log("[STEP3] cart snapshot:", cart);
+
+  try{
+    // 0) cart empty => stop
+    if(!cart || cart.length === 0){
+      console.log("[STEP3] STOP because cart empty");
+      return;
+    }
+
+    // 1) contactId
+    const contactId = (ACTIVE_CUSTOMER?.contact_id ?? -1);
+    console.log("[STEP3] contactId:", contactId);
+
+    // 2) itemIds from cart
+    const itemIds = [...new Set(
+      cart.map(i => Number(i.itemId)).filter(v => v && !Number.isNaN(v))
+    )];
+
+    console.log("[STEP3] itemIds:", itemIds);
+    console.log("[STEP3] first cart item sample:", cart[0]);
+
+    if(itemIds.length === 0){
+      console.log("[STEP3] STOP because itemIds empty. Possible cart field is not itemId.");
+      return;
+    }
+
+    // 3) key cache
+    const key = `${contactId}|${itemIds.join(",")}`;
+    console.log("[STEP3] key:", key);
+
+    if(key === _histLastKey){
+      console.log("[STEP3] cache hit -> applyPriceHistoryToDOM()");
+      applyPriceHistoryToDOM();
+      return;
+    }
+    _histLastKey = key;
+
+    // 4) Query orders
+    console.log("[STEP3] query orders...");
+    const { data: orders, error: errOrders } = await sb
+      .from("pos_sales_orders")
+      .select("salesorder_no, transaction_date")
+      .eq("contact_id", contactId)
+      .order("transaction_date", { ascending: false })
+      .limit(500);
+
+    if(errOrders){
+      console.error("[STEP3] orders error:", errOrders);
+      return;
+    }
+
+    console.log("[STEP3] orders count:", (orders || []).length);
+    console.log("[STEP3] orders sample:", (orders || [])[0]);
+
+    const orderNos = (orders || []).map(o => o.salesorder_no).filter(Boolean);
+
+    if(orderNos.length === 0){
+      console.log("[STEP3] no orders found for contactId", contactId);
+      LAST_PRICE_HISTORY = {};
+      applyPriceHistoryToDOM();
+      return;
+    }
+
+    const orderDateMap = new Map((orders || []).map(o => [String(o.salesorder_no), o.transaction_date]));
+
+    // 5) Query order items
+    console.log("[STEP3] query order items...");
+    const { data: rows, error: errItems } = await sb
+      .from("pos_sales_order_items")
+      .select("salesorder_no, item_id, price")
+      .in("salesorder_no", orderNos)
+      .in("item_id", itemIds);
+
+    if(errItems){
+      console.error("[STEP3] items error:", errItems);
+      return;
+    }
+
+    console.log("[STEP3] rows count:", (rows || []).length);
+    console.log("[STEP3] rows sample:", (rows || [])[0]);
+
+    // 6) Pick latest per item_id
+    const best = {};
+    for(const r of (rows || [])){
+      const itemId = Number(r.item_id);
+      const so = String(r.salesorder_no);
+      const dt = orderDateMap.get(so);
+      if(!dt) continue;
+
+      if(!best[itemId] || new Date(dt) > new Date(best[itemId].dateIso)){
+        best[itemId] = { pPrev: Number(r.price || 0), dateIso: dt };
+      }
+    }
+
+    LAST_PRICE_HISTORY = best;
+    console.log("[STEP3] LAST_PRICE_HISTORY:", LAST_PRICE_HISTORY);
+
+    // 7) Apply to DOM
+    applyPriceHistoryToDOM();
+    console.log("[STEP3] applyPriceHistoryToDOM DONE");
+
+  }catch(e){
+    console.error("[STEP3] refreshHistoryIndicators crash:", e);
+  }
+}
+function applyPriceHistoryToDOM(){
+  if(!cart) return;
+
+  for(const i of cart){
+    const itemId = Number(i.itemId);
+    const rec = LAST_PRICE_HISTORY[itemId];
+
+    const moveEl = document.querySelector(`[data-move-for="${i.code}"]`);
+    const dotEl  = document.querySelector(`[data-risk-for="${i.code}"]`);
+    if(!moveEl) continue;
+
+    const pNow = Number(i.price || 0);
+
+    // helper: set dot class aman
+    const setDot = (cls, titleText) => {
+      if(!dotEl) return;
+      dotEl.classList.remove("is-neutral","is-ok","is-warn","is-risk");
+      dotEl.classList.add(cls);
+      if(titleText) dotEl.title = titleText;
+    };
+
+    // kalau belum ada histori
+    if(!rec){
+      moveEl.textContent = "↕";
+      moveEl.title = `Prev: - | Now: ${formatRupiah(pNow)}`;
+      setDot("is-neutral", "OK");
+      continue;
+    }
+
+    const pPrev = Number(rec.pPrev || 0);
+    const dStr  = formatDateDDMMYYYY(rec.dateIso);
+
+    // ikon arah
+    let ico = "→";
+    if(pNow > pPrev) ico = "↑";
+    else if(pNow < pPrev) ico = "↓";
+
+    moveEl.textContent = ico;
+    moveEl.title = `Prev: ${formatRupiah(pPrev)} | Now: ${formatRupiah(pNow)} | ${dStr}`;
+
+    // status dot (Step 3: pakai rule sederhana dulu)
+    // status dot (Rule baru: hijau = sama, kuning = beda kecil, merah = beda besar)
+// ambang batas bisa diubah sesuai kebutuhan kasir
+const SMALL_DIFF_MAX = 2;  // <= 2% => kuning (beda dikit)
+const BIG_DIFF_MIN   = 5;  // >= 5% => merah (beda besar)
+
+// hitung selisih persen (hindari pembagian 0)
+let diffPct = 0;
+if(pPrev > 0){
+  diffPct = Math.abs(pNow - pPrev) / pPrev * 100;
+}else{
+  diffPct = (pNow === 0) ? 0 : 999; // kalau prev 0 tapi now ada, anggap beda sangat besar
+}
+
+// rapikan title biar kasir langsung ngeh
+const pctText = (diffPct >= 999) ? "∞" : `${diffPct.toFixed(1)}%`;
+
+if(pNow === pPrev){
+  // HIJAU: sama persis
+  setDot("is-ok", "OK (0%)");
+}else if(diffPct <= SMALL_DIFF_MAX){
+  // KUNING: beda dikit
+  setDot("is-warn", `Cek (${pctText})`);
+}else if(diffPct >= BIG_DIFF_MIN){
+  // MERAH: beda besar
+  setDot("is-risk", `Cek (${pctText})`);
+}else{
+  // area tengah (2% - 5%) tetap kuning
+  setDot("is-warn", `Cek (${pctText})`);
+}
+
+  }
+}
+function scheduleRefreshCostIndicators(){
+  console.log("[MODAL1A] scheduleRefreshCostIndicators CALLED"); // ✅ TAMBAH INI
+  if(_costTimer) clearTimeout(_costTimer);
+  _costTimer = setTimeout(()=> {
+    refreshCostIndicators();
+  }, 120);
+}
+
+
+async function refreshCostIndicators(){
+  try{
+    if(!cart || cart.length === 0) return;
+
+    const itemIds = [...new Set(
+      cart.map(i => Number(i.itemId)).filter(v => v && !Number.isNaN(v))
+    )];
+
+    if(itemIds.length === 0) return;
+
+    const key = itemIds.join(",");
+    if(key === _costLastKey){
+      applyCostNowToDOM();
+      return;
+    }
+    _costLastKey = key;
+
+    console.log("[MODAL1A] itemIds:", itemIds);
+
+    // 1) ambil PO terbaru
+    const { data: poHeads, error: errPO } = await sb
+      .from("po_header")
+      .select("purchaseorder_id, transaction_date")
+      .order("transaction_date", { ascending: false })
+      .limit(500);
+
+    if(errPO){
+      console.error("[MODAL1A] po_header error:", errPO);
+      return;
+    }
+
+    const poIds = (poHeads || []).map(x => x.purchaseorder_id).filter(v => v != null);
+    if(poIds.length === 0){
+      COST_NOW_MAP = {};
+      applyCostNowToDOM();
+      return;
+    }
+
+    const poDateMap = new Map((poHeads || []).map(h => [Number(h.purchaseorder_id), h.transaction_date]));
+
+    // 2) ambil item PO untuk item di cart
+    const { data: rows, error: errItems } = await sb
+      .from("po_item")
+      .select("purchaseorder_id, item_id, buy_price, last_price_receive")
+      .in("purchaseorder_id", poIds)
+      .in("item_id", itemIds);
+
+    if(errItems){
+      console.error("[MODAL1A] po_item error:", errItems);
+      return;
+    }
+
+    console.log("[MODAL1A] po_item rows:", (rows || []).length);
+// 3) ambil 2 PO terbaru per item_id (now & prev) berdasar tanggal PO
+const best = {}; // itemId => { now:{c,dt}, prev:{c,dt} }
+
+for(const r of (rows || [])){
+  const itemId = Number(r.item_id);
+  const poId = Number(r.purchaseorder_id);
+  const dt = poDateMap.get(poId);
+  if(!dt) continue;
+
+  const c = Number(r.last_price_receive ?? r.buy_price ?? 0);
+
+  if(!best[itemId]){
+    best[itemId] = { now: null, prev: null };
+  }
+
+  const now = best[itemId].now;
+  const prev = best[itemId].prev;
+
+  // case 1: belum ada now
+  if(!now){
+    best[itemId].now = { c, dt };
+    continue;
+  }
+
+  // case 2: dt lebih baru dari now => shift now -> prev
+  if(new Date(dt) > new Date(now.dt)){
+    best[itemId].prev = now;
+    best[itemId].now = { c, dt };
+    continue;
+  }
+
+  // case 3: dt lebih lama dari now, kandidat prev (ambil yang paling baru setelah prev)
+  if(new Date(dt) < new Date(now.dt)){
+    if(!prev || new Date(dt) > new Date(prev.dt)){
+      best[itemId].prev = { c, dt };
+    }
+  }
+}
+COST_HISTORY_MAP = best;
+
+// tetap isi COST_NOW_MAP agar tooltip coin tetap jalan
+const nowMap = {};
+for(const itemId in best){
+  if(best[itemId]?.now){
+    nowMap[itemId] = { cNow: best[itemId].now.c, dateIso: best[itemId].now.dt };
+  }
+}
+COST_NOW_MAP = nowMap;
+
+
+
+    console.log("[MODAL1A] COST_NOW_MAP:", COST_NOW_MAP);
+
+    applyCostNowToDOM();
+  }catch(e){
+    console.error("[MODAL1A] refreshCostIndicators crash:", e);
+  }
+}
+
+function applyCostNowToDOM(){
+  if(!cart) return;
+
+  for(const i of cart){
+    const el = document.querySelector(`[data-cost-indicator-for="${i.code}"]`);
+    if(!el) continue;
+
+    const itemId = Number(i.itemId);
+
+    // ambil history (now & prev)
+    const h = COST_HISTORY_MAP?.[itemId];
+
+    // fallback: kalau history belum kebentuk, pakai COST_NOW_MAP lama
+    if(!h || !h.now){
+      const rec = COST_NOW_MAP?.[itemId];
+      if(!rec){
+        el.title = "Prev: - | Now: -";
+        continue;
+      }
+      const dStr = formatDateDDMMYYYY(rec.dateIso);
+      el.title = `Prev: - | Now: ${formatRupiah(rec.cNow)} | ${dStr}`;
+      continue;
+    }
+
+    const now = h.now; // {c, dt}
+    const prev = h.prev; // {c, dt} atau null
+
+    const nowStr = `${formatRupiah(now.c)} | ${formatDateDDMMYYYY(now.dt)}`;
+    const prevStr = prev ? `${formatRupiah(prev.c)} | ${formatDateDDMMYYYY(prev.dt)}` : "-";
+
+    el.title = `Prev: ${prevStr} | Now: ${nowStr}`;
+  }
+}
+
+
 
 function selectCustomer(contactId) {
   const cust = CUSTOMER_LIST.find(c => c.contact_id == contactId);
@@ -2157,7 +2738,6 @@ function selectCustomer(contactId) {
 
   recalcCartPrices();
   renderCart();
-
   saveOrderState();
   try { refreshWaPhoneUI(); } catch(_) {}
 
@@ -5204,3 +5784,326 @@ document.addEventListener("DOMContentLoaded", () => {
     console.warn("[WA_CHECKBOX] element not found");
   }
 });
+// ===============================
+// DRAFT CART (SEBELUM BAYAR)
+// ===============================
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("btnDraftCart");
+  if(btn){
+    btn.addEventListener("click", openDraftModal);
+  }
+
+  const btnClose = document.getElementById("btnDraftClose");
+  if(btnClose) btnClose.addEventListener("click", closeDraftModal);
+
+  const btnCopy = document.getElementById("btnDraftCopy");
+  if(btnCopy) btnCopy.addEventListener("click", copyDraftText);
+
+  const btnPrint = document.getElementById("btnDraftPrint");
+  if(btnPrint) btnPrint.addEventListener("click", printDraft);
+});
+function openDraftModal(){
+  // kalau keranjang kosong
+  if(!Array.isArray(cart) || cart.length === 0){
+    alert("Keranjang masih kosong.");
+    return;
+  }
+
+  const modal = document.getElementById("draftModal");
+  const content = document.getElementById("draftContent");
+  if(!modal || !content) return;
+
+  content.innerHTML = buildDraftHTML();
+  modal.style.display = "flex";
+}
+
+function closeDraftModal(){
+  const modal = document.getElementById("draftModal");
+  if(modal) modal.style.display = "none";
+}
+
+function buildDraftHTML(){
+  // Ambil info cashier kalau ada
+  const cashierText = (document.getElementById("cashierInfo")?.textContent || "").trim();
+
+  // Header
+  let html = `
+    <div style="text-align:center; font-weight:900; font-size:14px;">TASAJI FOOD</div>
+    <div style="text-align:center; font-size:12px; margin-top:2px;">DRAFT (BELUM DIBAYAR)</div>
+    <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
+    <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
+  `;
+
+  // Lines
+  html += `<div style="font-size:12px;">`;
+  cart.forEach(it => {
+    const name = escapeHtml(it.name || "-");
+    const qty = Number(it.qty || 0);
+    const price = Number(it.price || 0);
+    const lineTotal = qty * price;
+
+    html += `
+      <div style="display:flex; justify-content:space-between; gap:10px;">
+        <div style="flex:1; font-weight:700;">${name}</div>
+        <div style="white-space:nowrap;">${formatRupiah(lineTotal)}</div>
+      </div>
+      <div style="display:flex; justify-content:space-between; gap:10px; color:#666; margin-bottom:8px;">
+        <div style="flex:1;">${qty} x ${formatRupiah(price)}</div>
+        <div style="white-space:nowrap;">${escapeHtml(it.code || "")}</div>
+      </div>
+    `;
+  });
+  html += `</div>`;
+
+  // Total
+  const total = cart.reduce((a, it) => a + (Number(it.qty||0) * Number(it.price||0)), 0);
+  const itemCount = cart.reduce((a, it) => a + Number(it.qty||0), 0);
+
+  html += `
+    <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
+    <div style="display:flex; justify-content:space-between; font-size:12px;">
+      <div>Total Item</div>
+      <div><b>${itemCount}</b></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; font-size:14px; margin-top:6px;">
+      <div><b>TOTAL</b></div>
+      <div><b>${formatRupiah(total)}</b></div>
+    </div>
+
+    <div style="margin-top:10px; font-size:11px; color:#666; text-align:center;">
+      Draft ini hanya untuk konfirmasi (belum tersimpan & belum dibayar)
+    </div>
+  `;
+
+  return html;
+}
+
+function copyDraftText(){
+  if(!Array.isArray(cart) || cart.length === 0){
+    alert("Keranjang kosong.");
+    return;
+  }
+
+  const text = buildDraftText();
+  navigator.clipboard.writeText(text).then(() => {
+    alert("Draft berhasil di-copy. Tinggal paste ke WhatsApp.");
+  }).catch(() => {
+    alert("Gagal copy. Coba manual screenshot/print.");
+  });
+}
+
+function buildDraftText(){
+  const cashierText = (document.getElementById("cashierInfo")?.textContent || "").trim();
+  const lines = [];
+  lines.push("TASAJI FOOD");
+  lines.push("DRAFT (BELUM DIBAYAR)");
+  if(cashierText) lines.push(cashierText);
+  lines.push("------------------------------");
+
+  cart.forEach(it => {
+    const name = it.name || "-";
+    const code = it.code || "";
+    const qty = Number(it.qty || 0);
+    const price = Number(it.price || 0);
+    const lineTotal = qty * price;
+    lines.push(`${name}`);
+    lines.push(`  ${qty} x ${formatRupiah(price)} = ${formatRupiah(lineTotal)}  (${code})`);
+  });
+
+  const total = cart.reduce((a, it) => a + (Number(it.qty||0) * Number(it.price||0)), 0);
+  const itemCount = cart.reduce((a, it) => a + Number(it.qty||0), 0);
+
+  lines.push("------------------------------");
+  lines.push(`Total Item: ${itemCount}`);
+  lines.push(`TOTAL: ${formatRupiah(total)}`);
+  lines.push("");
+  lines.push("Catatan: Draft ini hanya untuk konfirmasi (belum tersimpan & belum dibayar).");
+
+  return lines.join("\n");
+}
+
+function printDraft(){
+  const html = buildDraftHTML();
+  const w = window.open("", "_blank");
+  if(!w) {
+    alert("Pop-up terblokir. Izinkan pop-up untuk print.");
+    return;
+  }
+
+  w.document.open();
+  w.document.write(`
+    <html>
+      <head>
+        <title>Draft</title>
+        <meta charset="utf-8" />
+        <style>
+          body{ font-family: monospace; padding: 12px; }
+        </style>
+      </head>
+      <body>
+        ${html}
+        <script>
+          window.onload = function(){
+            window.print();
+          };
+        <\/script>
+      </body>
+    </html>
+  `);
+  w.document.close();
+}
+
+// util kecil
+function escapeHtml(s){
+  return String(s || "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+  const btnGudang = document.getElementById("btnGudangList");
+  if(btnGudang){
+    btnGudang.addEventListener("click", openGudangModal);
+  }
+
+  const btnGudangClose = document.getElementById("btnGudangClose");
+  if(btnGudangClose) btnGudangClose.addEventListener("click", closeGudangModal);
+
+  const btnGudangCopy = document.getElementById("btnGudangCopy");
+  if(btnGudangCopy) btnGudangCopy.addEventListener("click", copyGudangText);
+
+  const btnGudangPrint = document.getElementById("btnGudangPrint");
+  if(btnGudangPrint) btnGudangPrint.addEventListener("click", printGudang);
+function openGudangModal(){
+  if(!Array.isArray(cart) || cart.length === 0){
+    alert("Keranjang masih kosong.");
+    return;
+  }
+
+  const modal = document.getElementById("gudangModal");
+  const content = document.getElementById("gudangContent");
+  if(!modal || !content) return;
+
+  content.innerHTML = buildGudangHTML();
+  modal.style.display = "flex";
+}
+
+function closeGudangModal(){
+  const modal = document.getElementById("gudangModal");
+  if(modal) modal.style.display = "none";
+}
+
+function buildGudangHTML(){
+  const cashierText = (document.getElementById("cashierInfo")?.textContent || "").trim();
+
+  // Header
+  let html = `
+    <div style="text-align:center; font-weight:900; font-size:14px;">TASAJI FOOD</div>
+    <div style="text-align:center; font-size:12px; margin-top:2px;">PICKING LIST (INTERNAL)</div>
+    <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
+    <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
+  `;
+
+  // Lines (tanpa harga)
+  html += `<div style="font-size:12px;">`;
+  cart.forEach(it => {
+    const name = escapeHtml(it.name || "-");
+    const code = escapeHtml(it.code || "");
+    const qty = Number(it.qty || 0);
+
+    html += `
+      <div style="display:flex; justify-content:space-between; gap:10px; margin-bottom:8px;">
+        <div style="flex:1; font-weight:700;">${name}</div>
+        <div style="white-space:nowrap; font-weight:900;">x${qty}</div>
+      </div>
+      <div style="margin-top:-6px; margin-bottom:10px; color:#666; font-size:11px;">
+        ${code}
+      </div>
+    `;
+  });
+  html += `</div>`;
+
+  // Footer info
+  const itemCount = cart.reduce((a, it) => a + Number(it.qty||0), 0);
+
+  html += `
+    <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
+    <div style="display:flex; justify-content:space-between; font-size:12px;">
+      <div>Total Qty</div>
+      <div><b>${itemCount}</b></div>
+    </div>
+
+    <div style="margin-top:10px; font-size:11px; color:#666; text-align:center;">
+      Catatan: Ini hanya picking list untuk persiapan barang (tanpa harga).
+    </div>
+  `;
+
+  return html;
+}
+
+function buildGudangText(){
+  const cashierText = (document.getElementById("cashierInfo")?.textContent || "").trim();
+  const lines = [];
+  lines.push("TASAJI FOOD");
+  lines.push("PICKING LIST (INTERNAL)");
+  if(cashierText) lines.push(cashierText);
+  lines.push("------------------------------");
+
+  cart.forEach(it => {
+    const name = it.name || "-";
+    const code = it.code || "";
+    const qty = Number(it.qty || 0);
+    lines.push(`x${qty}  ${name}  (${code})`);
+  });
+
+  const itemCount = cart.reduce((a, it) => a + Number(it.qty||0), 0);
+  lines.push("------------------------------");
+  lines.push(`Total Qty: ${itemCount}`);
+  lines.push("Catatan: Picking list untuk persiapan barang (tanpa harga).");
+
+  return lines.join("\n");
+}
+
+function copyGudangText(){
+  if(!Array.isArray(cart) || cart.length === 0){
+    alert("Keranjang kosong.");
+    return;
+  }
+
+  const text = buildGudangText();
+  navigator.clipboard.writeText(text).then(() => {
+    alert("List Gudang berhasil di-copy.");
+  }).catch(() => {
+    alert("Gagal copy. Coba print / screenshot.");
+  });
+}
+
+function printGudang(){
+  const html = buildGudangHTML();
+  const w = window.open("", "_blank");
+  if(!w) {
+    alert("Pop-up terblokir. Izinkan pop-up untuk print.");
+    return;
+  }
+
+  w.document.open();
+  w.document.write(`
+    <html>
+      <head>
+        <title>List Gudang</title>
+        <meta charset="utf-8" />
+        <style>
+          body{ font-family: monospace; padding: 12px; }
+        </style>
+      </head>
+      <body>
+        ${html}
+        <script>
+          window.onload = function(){ window.print(); };
+        <\/script>
+      </body>
+    </html>
+  `);
+  w.document.close();
+}
