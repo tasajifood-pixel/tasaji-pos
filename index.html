@@ -540,8 +540,7 @@
 
   <!-- ================= RIGHT (TETAP) ================= -->
   <section class="cart-panel">
-
-    <div class="cart-header" style="
+<div class="cart-header" style="
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -553,8 +552,16 @@
     <button class="btn-outline">💾 Simpan</button>
   </div>
 
+  <!-- ✅ AREA TOMBOL TAMBAHAN (DRAFT) -->
+  <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; flex:1;">
+    <button class="btn-outline" id="btnDraftCart" title="Draft (sebelum bayar)">🧾 Draft</button>
+<button class="btn-outline" id="btnGudangList" title="List Gudang (tanpa harga)">📦 Picking List</button>
+
+  </div>
+
   <button class="cart-reset">Reset</button>
 </div>
+
 
 
 
@@ -621,6 +628,91 @@
   ">
   </div>
 </div>
+<!-- =====================================================
+     DRAFT (SEBELUM BAYAR) - POPUP
+===================================================== -->
+<div id="draftModal" style="
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.4);
+  z-index:10000;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+">
+  <div id="draftCard" style="
+    width:420px;
+    max-width:95vw;
+    background:#fff;
+    border-radius:14px;
+    overflow:hidden;
+    box-shadow:0 10px 30px rgba(0,0,0,.25);
+    font-family: monospace;
+  ">
+    <div style="
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      padding:10px 12px;
+      background:#fafafa;
+      border-bottom:1px solid #eee;
+    ">
+      <div style="font-weight:800;">🧾 Draft (Belum Dibayar)</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn-outline" id="btnDraftCopy">📋 Copy</button>
+        <button class="btn-outline" id="btnDraftPrint">🖨 Print</button>
+        <button class="btn-outline" id="btnDraftClose">Tutup</button>
+      </div>
+    </div>
+
+    <div id="draftContent" style="padding:12px;"></div>
+  </div>
+</div>
+<!-- =====================================================
+     LIST GUDANG (PICKING) - POPUP
+===================================================== -->
+<div id="gudangModal" style="
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.4);
+  z-index:10000;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+">
+  <div id="gudangCard" style="
+    width:420px;
+    max-width:95vw;
+    background:#fff;
+    border-radius:14px;
+    overflow:hidden;
+    box-shadow:0 10px 30px rgba(0,0,0,.25);
+    font-family: monospace;
+  ">
+    <div style="
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      padding:10px 12px;
+      background:#fafafa;
+      border-bottom:1px solid #eee;
+    ">
+      <div style="font-weight:800;">📦 Picking List</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn-outline" id="btnGudangCopy">📋 Copy</button>
+        <button class="btn-outline" id="btnGudangPrint">🖨 Print</button>
+        <button class="btn-outline" id="btnGudangClose">Tutup</button>
+      </div>
+    </div>
+
+    <div id="gudangContent" style="padding:12px;"></div>
+  </div>
+</div>
+
 <!-- =====================================================
      HOLD / PARKED ORDERS (MODAL)
 ===================================================== -->
