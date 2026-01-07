@@ -2197,3 +2197,149 @@ body{
   font-size: 13px;
   opacity: 0.7;
 }
+/* ===== STEP 1.1 Icon-only indicators (safe, no sensitive text) ===== */
+.mini-ico{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #eee;
+  background:#fff;
+  font-size: 14px;
+  line-height: 1;
+  margin-right: 6px;
+}
+
+/* rapikan tombol pensil agar selaras dengan ikon lain */
+.cart-icon-btn.btn-edit-price{
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #eee;
+  background:#fff;
+  margin-right: 6px;
+}
+/* ===== Price Edit Popup (STEP 2.2) - center on cart area ===== */
+#priceEditModal{
+  display:none;
+  position:fixed;
+  inset:0;
+  z-index:9999;
+}
+
+/* backdrop cuma area kanan (keranjang), kiri tidak ketutup */
+#priceEditModal .pem-backdrop{
+  position:absolute;
+  top:0;
+  right:0;
+  height:100%;
+  width: 42%;
+  background: rgba(0,0,0,.20);
+}
+
+/* card kotak, di tengah area kanan */
+#priceEditModal .pem-card{
+  position:absolute;
+  right: 6%;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(420px, 36vw);
+  max-height: 70vh;
+  overflow:auto;
+  background:#fff;
+  border:1px solid #eee;
+  border-radius:12px;
+  padding:14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.15);
+}
+
+#priceEditModal .pem-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:10px;
+}
+
+#priceEditModal .pem-title{
+  font-size:14px;
+  font-weight:800;
+}
+
+#priceEditModal .pem-close{
+  background:transparent;
+  border:none;
+  cursor:pointer;
+  font-size:18px;
+  line-height:1;
+}
+
+#priceEditModal .pem-row{
+  font-size:13px;
+  margin:6px 0;
+}
+
+#priceEditModal .pem-muted{
+  font-size:12px;
+  opacity:.7;
+}
+
+/* mobile: backdrop full, card center full-width kecil */
+@media (max-width: 900px){
+  #priceEditModal .pem-backdrop{
+    width:100%;
+  }
+  #priceEditModal .pem-card{
+    left: 50%;
+    right: auto;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(420px, 92vw);
+    max-height: 80vh;
+  }
+}
+/* ===== PRICE INDICATOR DOT (FINAL, rapi center) ===== */
+/* ===== PRICE INDICATOR DOT (BOX 28x28 biar sejajar tombol) ===== */
+.risk-dot{
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #eee;
+  background: #fff;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  flex: 0 0 28px;
+  margin-right: 6px;
+  user-select: none;
+
+  /* warna default */
+  --dot: #bdbdbd;
+}
+
+/* bulatan di tengah */
+.risk-dot::before{
+  content: "";
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--dot);
+  display: block;
+}
+
+/* status colors (set variabelnya) */
+.risk-dot.is-neutral{ --dot:#bdbdbd; }
+.risk-dot.is-ok{ --dot:#16a34a; }
+.risk-dot.is-warn{ --dot:#f59e0b; }
+.risk-dot.is-risk{ --dot:#ef4444; }
+
+
+
+/* icon kecil biar terasa "tooltip" */
+.mini-ico{
+  cursor: help;
+}
