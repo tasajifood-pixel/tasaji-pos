@@ -561,6 +561,48 @@ function loadCashier(){
 let TXN_PAGE = 1;
 const TXN_PAGE_SIZE = 20;
 let TXN_SELECTED = null; // { salesorder_no, header, items, payments }
+// ===============================
+// BANK ACCOUNTS (TRANSFER)
+// ===============================
+const BANK_ACCOUNTS = {
+  bca: [
+    { id:"bca_1", label:"BCA - Umi",   acc_name:"MARYAM MOH. IBRAHIM",     acc_no:"8416019083" },
+    { id:"bca_2", label:"BCA - Ahmad",   acc_name:"AHMAD MUJAHID",            acc_no:"8415132227" },
+    { id:"bca_3", label:"BCA - Maulida",     acc_name:"MAULIDATUL HASANAH",       acc_no:"8960709498" },
+    { id:"bca_4", label:"BCA - Bilqis",  acc_name:"PUTRI BILQIS AL BANNA",    acc_no:"8416081960" },
+  ],
+  mandiri: [
+    { id:"mdr_1", label:"Mandiri - Ahmad", acc_name:"AHMAD MUJAHID", acc_no:"1400016969744" },
+  ],
+};
+
+
+function accLast4(accNo){
+  const s = String(accNo || "").replace(/\D/g, "");
+  return s.slice(-4);
+}
+
+function formatAccLine(a){
+  // contoh: "BCA 1 (a/n Tasaji Food ••••1234)"
+  return `${a.label} (a/n ${a.acc_name} ••••${accLast4(a.acc_no)})`;
+}
+
+function pickAccountPrompt(bankKey){
+  const list = BANK_ACCOUNTS[bankKey] || [];
+  if (!list.length) return null;
+
+  const menu = list
+    .map((a, i) => `${i+1}. ${formatAccLine(a)}`)
+    .join("\n");
+
+  const input = prompt(
+    `Pilih rekening ${bankKey.toUpperCase()}:\n\n${menu}\n\nKetik angka 1-${list.length}`
+  );
+
+  const idx = Number(input) - 1;
+  if (Number.isNaN(idx) || idx < 0 || idx >= list.length) return null;
+  return list[idx];
+}
 
 /* =====================================================
    UTIL
@@ -2854,18 +2896,20 @@ renderQuickCashButtons();
 
   recalcPaymentStatus();
 }
-
 function methodLabel(method){
   const map = {
-    cash: "Kas",
+    cash: "Tunai", // ✅ dari "Kas" -> "Cash"
     debit_bca: "Debit BCA",
     debit_mandiri: "Debit Mandiri",
     qris_gopay: "QRIS GoPay",
     transfer_bca: "Transfer BCA",
+    transfer_mandiri: "Transfer Mandiri", // ✅ tambah
     piutang: "Piutang"
   };
   return map[method] || method;
 }
+
+
 
 
 function formatLineAmount(n){
@@ -2873,7 +2917,7 @@ function formatLineAmount(n){
 }
 
 
-function upsertPayLine(method, amount){
+function upsertPayLine(method, amount, labelOverride, meta){
   amount = Number(amount || 0);
 
   // kalau amount <=0 -> hapus line method tsb
@@ -2890,13 +2934,18 @@ function upsertPayLine(method, amount){
     return;
   }
 
+  const finalLabel = labelOverride || methodLabel(method);
+
   if (idx >= 0) {
     PAYMENT_LINES[idx].amount = amount;
+    PAYMENT_LINES[idx].label = finalLabel;      // ✅ update label juga
+    PAYMENT_LINES[idx].meta = meta || null;     // ✅ simpan meta (optional)
   } else {
     PAYMENT_LINES.push({
       method,
-      label: methodLabel(method),
-      amount
+      label: finalLabel,
+      amount,
+      meta: meta || null
     });
   }
 }
@@ -3060,20 +3109,24 @@ function addNonCashLine(method){
   }
 
   // ✅ biar bisa partial, kita tanya nominal (default = sisa)
-  const raw = prompt(`Nominal untuk ${methodLabel(method)}:`, String(rem));
-  if (raw === null) return;
+  let acc = null;
+let label = methodLabel(method);
 
-  const amt = Number(String(raw).replace(/[^\d]/g, "")) || 0;
-  if (amt <= 0) {
-    alert("Nominal harus > 0");
-    return;
-  }
-  if (amt > rem) {
-    alert("Nominal tidak boleh lebih besar dari sisa yang harus dibayar.");
-    return;
-  }
+// ✅ kalau transfer, pilih rekening dulu
+if (method === "transfer_bca" || method === "transfer_mandiri") {
+  acc = pickTransferAccount(method);
+  if (!acc) return; // batal
+  label = transferLabel(method, acc);
+}
 
-  upsertPayLine(method, amt);
+const raw = prompt(`Nominal untuk ${label}:`, String(rem));
+if (raw === null) return;
+
+const amt = Number(String(raw).replace(/[^\d]/g, "")) || 0;
+// ...validasi tetap sama...
+
+upsertPayLine(method, amt, label, acc ? { account_id: acc.id, bank: acc.bank, no: acc.no, an: acc.an } : null);
+
   recalcPaymentStatus();
 }
 
@@ -3099,6 +3152,51 @@ function removePayLine(idx){
   recalcPaymentStatus();
 }
 
+// =========================
+// BANK ACCOUNTS (TRANSFER)
+// =========================
+const TRANSFER_ACCOUNTS = {
+  transfer_bca: [
+    { id:"bca_1", bank:"BCA", no:"8960709498", an:"MAULIDATUL HASANAH" },
+    { id:"bca_2", bank:"BCA", no:"8416019083", an:"MARYAM MOH. IBRAHIM" },
+    { id:"bca_3", bank:"BCA", no:"8415132227", an:"AHMAD MUJAHID" },
+    { id:"bca_4", bank:"BCA", no:"8416081960", an:"PUTRI BILQIS AL BANNA" },
+  ],
+  transfer_mandiri: [
+    { id:"mandiri_1", bank:"Mandiri", no:"1400016969744", an:"AHMAD MUJAHID" },
+  ]
+};
+
+function pickTransferAccount(method){
+  const list = TRANSFER_ACCOUNTS[method] || [];
+  if (!list.length) return null;
+
+  // kalau cuma 1 rekening, langsung pilih
+  if (list.length === 1) return list[0];
+
+  // kalau banyak, suruh pilih
+  const menu = list
+    .map((x,i)=> `${i+1}. ${x.bank} ${x.no} (A.N ${x.an})`)
+    .join("\n");
+
+  const raw = prompt(
+    `Pilih rekening untuk ${methodLabel(method)}:\n\n${menu}\n\nKetik angka 1-${list.length}`,
+    "1"
+  );
+  if (raw === null) return null;
+
+  const idx = Number(String(raw).trim()) - 1;
+  if (Number.isNaN(idx) || idx < 0 || idx >= list.length) {
+    alert("Pilihan rekening tidak valid.");
+    return null;
+  }
+  return list[idx];
+}
+
+function transferLabel(method, acc){
+  if (!acc) return methodLabel(method);
+  return `${methodLabel(method)} - ${acc.no} (A.N ${acc.an})`;
+}
 
 function bindPaymentMethodButtons(){
   document.querySelectorAll(".pay-method-btn").forEach(btn => {
@@ -3113,6 +3211,9 @@ function bindPaymentMethodButtons(){
       btn.classList.add("active");
 
       selectedPaymentMethod = btn.dataset.method;
+	  // ===============================
+
+
 
       if (selectedPaymentMethod === "cash") {
 
@@ -4279,10 +4380,16 @@ if (cashierFilter === "ACTIVE" && activeCashierId) {
 }
 // ✅ filter metode pembayaran (ONLINE)
 const like = txnPayFilterToIlike(payFilter);
+
 if (like) {
-  // payment_method di header itu string gabungan, jadi pakai ilike
-  q = q.ilike("payment_method", like);
+  if (Array.isArray(like)) {
+    // Cash: kas OR tunai
+    q = q.or(`payment_method.ilike.${like[0]},payment_method.ilike.${like[1]}`);
+  } else {
+    q = q.ilike("payment_method", like);
+  }
 }
+
 
   // search
   if (keyword) {
@@ -5261,7 +5368,7 @@ function normPayKey(label){
   const t = String(label || "").toLowerCase();
 
   // CASH
-  if (t === "kas" || t === "cash" || t.includes("kas")) return "Cash";
+  if (t === "kas" || t === "tunai" || t === "cash" || t.includes("kas") || t.includes("tunai")) return "Cash";
 
   // QRIS / E-WALLET
   if (t.includes("qris") || t.includes("gopay")) return "QRIS";
@@ -5290,7 +5397,7 @@ function txnPayFilterToIlike(selectedKey){
   if (!k || k === "all") return null;
 
   // pola yang paling aman sesuai label yang kamu simpan
-  if (k === "cash") return "%kas%";                // "Kas"
+  if (k === "cash") return ["%tunai%", "%kas%"];                 // "Kas"
   if (k === "qris") return "%qris%";               // "QRIS GoPay"
   if (k === "debit bca") return "%debit bca%";
   if (k === "debit mandiri") return "%debit mandiri%";
