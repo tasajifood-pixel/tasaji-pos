@@ -316,10 +316,17 @@ let selectedPaymentMethod = null;
 let PAYMENT_LINES = []; // [{ method:'cash', label:'Kas', amount:20000 }]
 
 let CUSTOMER_LIST = [];
-function getActiveCustomerName(){
-  const name = (ACTIVE_CUSTOMER?.contact_name || "Pelanggan Umum");
-  const s = String(name || "").trim();
-  return s ? s : "Pelanggan Umum";
+let ACTIVE_CUSTOMER = null;
+
+function getActiveCustomerInfo(){
+  // Untuk Draft & Picking List
+  if (!ACTIVE_CUSTOMER) return "Pelanggan Umum";
+  const name = String(ACTIVE_CUSTOMER.contact_name || "").trim() || "Pelanggan Umum";
+  const phone = String(ACTIVE_CUSTOMER.phone || "").trim();
+  const cat = String(ACTIVE_CUSTOMER.category_display || "").trim();
+
+  const left = phone ? `${name} - ${phone}` : name;
+  return cat ? `${left} (${cat})` : left;
 }
 
 // ===== STEP 3: Price history (P prev) =====
@@ -5943,8 +5950,8 @@ function buildDraftHTML(){
     <div style="text-align:center; font-weight:900; font-size:14px;">TASAJI FOOD</div>
     <div style="text-align:center; font-size:12px; margin-top:2px;">DRAFT (BELUM DIBAYAR)</div>
     <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
-<div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerName())}</div>
-<div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
+    <div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerInfo())}</div>
+    <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
   `;
 
   // Lines
@@ -6010,10 +6017,8 @@ function buildDraftText(){
   const lines = [];
   lines.push("TASAJI FOOD");
   lines.push("DRAFT (BELUM DIBAYAR)");
- if(cashierText) lines.push(cashierText);
-lines.push(`Pelanggan: ${getActiveCustomerName()}`);
-lines.push("------------------------------");
-
+  if(cashierText) lines.push(cashierText);
+  lines.push("------------------------------");
 
   cart.forEach(it => {
     const name = it.name || "-";
@@ -6116,10 +6121,9 @@ function buildGudangHTML(){
   let html = `
     <div style="text-align:center; font-weight:900; font-size:14px;">TASAJI FOOD</div>
     <div style="text-align:center; font-size:12px; margin-top:2px;">PICKING LIST (INTERNAL)</div>
-   <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
-<div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerName())}</div>
-<div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
-
+    <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
+    <div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerInfo())}</div>
+    <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
   `;
 
   // Lines (tanpa harga)
@@ -6164,10 +6168,8 @@ function buildGudangText(){
   const lines = [];
   lines.push("TASAJI FOOD");
   lines.push("PICKING LIST (INTERNAL)");
- if(cashierText) lines.push(cashierText);
-lines.push(`Pelanggan: ${getActiveCustomerName()}`);
-lines.push("------------------------------");
-
+  if(cashierText) lines.push(cashierText);
+  lines.push("------------------------------");
 
   cart.forEach(it => {
     const name = it.name || "-";
