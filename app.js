@@ -1200,14 +1200,14 @@ function buildHoldFromRow(r){
     payload.customer_category ||
     custFromPayload?.category ||
     "";
-
   // 2) label: nama pelanggan harus menang (yang user mau tampil)
- const label =
-  (custName && String(custName).trim()) ||
-  (holdObj?.label && String(holdObj.label).trim()) ||
-  (payload?.label && String(payload.label).trim()) ||
-  (payload?.salesorder_no && String(payload.salesorder_no).trim()) ||
-  (holdObj?.id || "");
+  const label =
+    (custName && String(custName).trim()) ||
+    (r?.label && String(r.label).trim()) ||
+    (payload?.label && String(payload.label).trim()) ||
+    (payload?.salesorder_no && String(payload.salesorder_no).trim()) ||
+    (r?.id || "");
+
 
 
   // 3) total & item_count
@@ -1398,7 +1398,12 @@ async function syncLocalHoldsToOnline(){
   const local = loadHolds();
   if(!local.length) return;
 
-  for(const h of local){
+  // ✅ hanya dorong hold yang memang "lokal" (belum jadi online),
+  // supaya hold yang sudah dihapus/ditutup di kasir lain tidak "hidup lagi".
+  const toSync = local.filter(h => (h && (h.source || "local") !== "online"));
+  if(!toSync.length) return;
+
+  for(const h of toSync){
     try{
       await upsertOnlineHold({ ...h });
     }catch(e){
@@ -1408,13 +1413,57 @@ async function syncLocalHoldsToOnline(){
 }
 
 /* =========================
+   HOLD LIST FILTER (CLEAN)
+   - Skip data sampah (***)
+   - Jika pelanggan bukan "Pelanggan Umum", wajib punya no tlp valid
+========================= */
+function holdHasTrashText(v){
+  if(v == null) return false;
+  return String(v).includes("***");
+}
+function isValidPhone62(p){
+  if(!p) return false;
+  const d = String(p).replace(/[^\d]/g,"");
+  // minimal 10 digit setelah diawali 62 (contoh 62812xxxxxxx)
+  return d.startsWith("62") && d.length >= 10;
+}
+function normalizeHoldForDisplay(h){
+  const out = { ...(h||{}) };
+  const rawPhone = out.customer_phone || (out.payload && out.payload.customer_phone) || "";
+  const phone62 = normalizePhoneTo62(rawPhone);
+  if(phone62) out.customer_phone = phone62;
+  return out;
+}
+function shouldShowHold(h){
+  if(!h) return false;
+
+  const label = h.label || "";
+  const name  = h.customer_name || "";
+  const phone = h.customer_phone || "";
+  const cat   = h.customer_category || "";
+
+  // tahan data sampah
+  if(holdHasTrashText(label) || holdHasTrashText(name) || holdHasTrashText(phone) || holdHasTrashText(cat)){
+    return false;
+  }
+
+  // kalau pelanggan bukan umum, wajib ada no tlp valid
+  const isUmum = String(name||"").trim().toLowerCase() === "pelanggan umum";
+  if(!isUmum && String(name||"").trim()){
+    if(!isValidPhone62(phone)) return false;
+  }
+
+  return true;
+}
+
+/* =========================
    UI LIST RENDER
 ========================= */
 function renderHoldList(list){
   const box = document.getElementById("holdList");
   if(!box) return;
 
-  const holds = list || [];
+  const holds = (list || []).map(normalizeHoldForDisplay).filter(shouldShowHold);
   if(!holds.length){
     box.innerHTML = `<div style="padding:14px;color:#777;">Belum ada transaksi tersimpan.</div>`;
     return;
@@ -1469,29 +1518,55 @@ async function refreshHoldList(){
 
   // 2) kalau online → tarik online + merge
   if(isOnline()){
-    try{
-      await flushHoldDeleteQueue();
-      await syncLocalHoldsToOnline();
-      const online = await fetchOnlineHolds();
+  try{
+    // (A) flush dulu antrian delete (kalau sebelumnya offline)
+    await flushHoldDeleteQueue();
 
-      // merge by id: ONLINE menang
-      const map = new Map();
-      for(const l of local) map.set(l.id, l);
-      for(const o of online) map.set(o.id, o);
+    // (B) fetch online dulu (source of truth)
+    let online = await fetchOnlineHolds();
 
-      const merged = Array.from(map.values()).sort((a,b)=>{
-        const ta = new Date(a.created_at || 0).getTime();
-        const tb = new Date(b.created_at || 0).getTime();
-        return tb - ta;
-      });
+    // (C) bersihkan local yang sebenarnya sudah ditutup/dihapus dari kasir lain
+    //     (khusus yang local.source === "online" tapi sudah tidak ada di online OPEN)
+    const onlineIdSet = new Set((online || []).map(x => x.id));
+    const cleanedLocal = local.filter(h => {
+      const src = (h.source || "local");
+      if(src === "online" && h.id && !onlineIdSet.has(h.id)) return false;
+      return true;
+    });
 
-      __HOLD_LIST_CACHE = merged;
-      renderHoldList(__HOLD_LIST_CACHE);
-    }catch(err){
-      console.warn("refreshHoldList: gagal ambil online holds", err);
-      // tetap tampil local
+    if(cleanedLocal.length !== local.length){
+      // update localStorage agar tidak bisa "menghidupkan lagi"
+      saveHolds(cleanedLocal.map(h => ({ ...h })));
+      local = cleanedLocal;
+    }else{
+      local = cleanedLocal;
     }
+
+    // (D) baru sync hold lokal (yang belum online)
+    await syncLocalHoldsToOnline();
+
+    // (E) fetch online lagi supaya hasil list sudah include yang baru tersync
+    online = await fetchOnlineHolds();
+
+    // merge by id: ONLINE menang
+    const map = new Map();
+    for(const l of local) map.set(l.id, l);
+    for(const o of online) map.set(o.id, o);
+
+    const merged = Array.from(map.values()).sort((a,b)=>{
+      const ta = new Date(a.created_at || 0).getTime();
+      const tb = new Date(b.created_at || 0).getTime();
+      return tb - ta;
+    });
+
+    __HOLD_LIST_CACHE = merged;
+    renderHoldList(__HOLD_LIST_CACHE);
+  }catch(err){
+    console.warn("refreshHoldList: gagal ambil online holds", err);
+    // tetap tampil local
   }
+}
+
 }
 
 /* =========================
@@ -1662,30 +1737,48 @@ if(!restoredCustomer){
 
 
     // restore state
-    if(typeof ACTIVE_CUSTOMER !== "undefined") ACTIVE_CUSTOMER = restoredCustomer;
-    cart = restoredCart;
-// ✅ paksa UI customer kebaca (fallback kalau sistem kamu pakai input)
+// ✅ normalisasi bentuk ACTIVE_CUSTOMER agar sesuai struktur CUSTOMER_LIST (contact_id/contact_name/phone/category_display)
+let uiCust = null;
+if(restoredCustomer){
+  const cName = (restoredCustomer.contact_name || restoredCustomer.name || restoredCustomer.customer_name || "").trim();
+  const cPhoneRaw = (restoredCustomer.phone || restoredCustomer.customer_phone || "").trim();
+  const cPhone62 = normalizePhoneTo62(cPhoneRaw) || cPhoneRaw;
+  const cCat = (restoredCustomer.category_display || restoredCustomer.category || restoredCustomer.customer_category || "").trim();
+
+  uiCust = {
+    contact_id: restoredCustomer.contact_id || restoredCustomer.id || restoredCustomer.customer_id || null,
+    contact_name: cName,
+    phone: cPhone62,
+    category_display: cCat || "-",
+    category: cCat || ""
+  };
+}
+
+if(typeof ACTIVE_CUSTOMER !== "undefined") ACTIVE_CUSTOMER = uiCust;
+cart = restoredCart;
+
+// ✅ isi kembali kolom input customer TANPA memicu searchCustomer yang bisa me-reset ACTIVE_CUSTOMER
 try{
-  if (typeof renderCustomer === "function") renderCustomer();
-  if (typeof renderCustomerBox === "function") renderCustomerBox();
-  if (typeof updateCustomerUI === "function") updateCustomerUI();
+  const input = document.getElementById("customerInput");
+  const dd = document.getElementById("customerDropdown");
 
-  // fallback manual (kalau ada input customer)
-  const el =
-    document.querySelector("#customerInput") ||
-    document.querySelector("input[name='customer']") ||
-    document.querySelector("input[placeholder*='Customer']");
-
-  if(el && restoredCustomer?.name){
-    el.value = restoredCustomer.name;
-    el.dispatchEvent(new Event("input", { bubbles:true }));
-    el.dispatchEvent(new Event("change", { bubbles:true }));
+  if(input){
+    if(uiCust && uiCust.contact_name){
+      input.value = uiCust.contact_name + (uiCust.category_display ? " (" + uiCust.category_display + ")" : "");
+    }else{
+      input.value = "";
+    }
   }
-}catch(e){}
+  if(dd) dd.style.display = "none";
+}catch(_){}
 
-    // re-render UI
-    renderCart();
-    updateSummary();
+// ✅ hitung ulang harga (jika harga bertingkat berdasarkan customer)
+try{ recalcCartPrices(); }catch(_){}
+
+// re-render UI
+renderCart();
+updateSummary();
+
 
     // arahkan ke step penjualan (bungkus aman)
     try{
