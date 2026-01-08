@@ -854,36 +854,58 @@
 <script src="app.js"></script>
 <script>
   (function () {
-    if (!("serviceWorker" in navigator)) return;
+  if (!("serviceWorker" in navigator)) return;
 
-    window.__POS_SW_UPDATED = false;
+  window.__POS_SW_UPDATED = false;
 
-    navigator.serviceWorker.register("./sw.js").then((reg) => {
-      reg.addEventListener("updatefound", () => {
-        const newWorker = reg.installing;
-        if (!newWorker) return;
+  navigator.serviceWorker.register("./sw.js").then((reg) => {
 
-        newWorker.addEventListener("statechange", () => {
-          if (newWorker.state === "installed") {
-            // update (bukan first install)
-            if (navigator.serviceWorker.controller) {
-              window.__POS_SW_UPDATED = true;
+    // ==========================
+    // ✅ AUTO-CHECK UPDATE (tanpa F5)
+    // ==========================
+    const __SW_CHECK_MS = 60 * 1000; // 1 menit (bisa 15*1000 untuk test cepat)
+    setInterval(() => {
+      try { reg.update(); } catch (e) {}
+    }, __SW_CHECK_MS);
 
-              // ✅ aman: tanya dulu, jangan auto reload saat kasir transaksi
-              const ok = confirm("Ada versi baru Tasaji POS. Muat ulang sekarang?");
-              if (ok) newWorker.postMessage({ type: "SKIP_WAITING" });
-            }
-          }
-        });
-      });
-
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        if (window.__POS_SW_UPDATED) location.reload();
-      });
-    }).catch((err) => {
-      console.warn("SW register failed:", err);
+    window.addEventListener("focus", () => {
+      try { reg.update(); } catch (e) {}
     });
-  })();
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        try { reg.update(); } catch (e) {}
+      }
+    });
+    // ==========================
+
+    reg.addEventListener("updatefound", () => {
+      const newWorker = reg.installing;
+      if (!newWorker) return;
+
+      newWorker.addEventListener("statechange", () => {
+        if (newWorker.state === "installed") {
+          // update (bukan first install)
+          if (navigator.serviceWorker.controller) {
+            window.__POS_SW_UPDATED = true;
+
+            // ✅ aman: tanya dulu, jangan auto reload saat kasir transaksi
+            const ok = confirm("Ada versi baru Tasaji POS. Muat ulang sekarang?");
+            if (ok) newWorker.postMessage({ type: "SKIP_WAITING" });
+          }
+        }
+      });
+    });
+
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (window.__POS_SW_UPDATED) location.reload();
+    });
+
+  }).catch((err) => {
+    console.warn("SW register failed:", err);
+  });
+})();
+
 </script>
 
 </body>
