@@ -305,6 +305,45 @@ let PRODUCT_VIEW_MODE =
   localStorage.getItem("setting_product_view") || "normal";
 
 let BEST_SELLER_PERIOD = "90d"; // default 90 hari
+// =====================================================
+// BEST SELLER OFFLINE SUPPORT
+// =====================================================
+const BESTSELLER_RANK_CACHE_PREFIX = "pos_best_seller_rankmap_v1_"; // + period
+const BESTSELLER_OFFLINE_COUNTER_KEY = "pos_best_seller_offline_counter_v1"; // {item_code: qty}
+
+function readJsonLS(key, fallback){
+  try { return JSON.parse(localStorage.getItem(key) || ""); }
+  catch(e){ return fallback; }
+}
+function writeJsonLS(key, obj){
+  localStorage.setItem(key, JSON.stringify(obj || {}));
+}
+
+function loadBestSellerRankCache(period){
+  const key = BESTSELLER_RANK_CACHE_PREFIX + String(period || "90d");
+  return readJsonLS(key, {});
+}
+function saveBestSellerRankCache(period, rankMap){
+  const key = BESTSELLER_RANK_CACHE_PREFIX + String(period || "90d");
+  writeJsonLS(key, rankMap || {});
+  localStorage.setItem(key + "_ts", String(Date.now()));
+}
+
+function loadOfflineBestCounter(){
+  return readJsonLS(BESTSELLER_OFFLINE_COUNTER_KEY, {});
+}
+
+function bumpOfflineBestCounter(cartItems){
+  // cartItems: [{ code/itemCode, qty, ... }]
+  const counter = loadOfflineBestCounter();
+  (cartItems || []).forEach(it => {
+    const code = String(it.code || it.itemCode || "").trim();
+    const qty  = Number(it.qty || 0);
+    if(!code || qty <= 0) return;
+    counter[code] = Number(counter[code] || 0) + qty;
+  });
+  writeJsonLS(BESTSELLER_OFFLINE_COUNTER_KEY, counter);
+}
 
 let page = 1;
 const pageSize = 25;
@@ -694,6 +733,121 @@ function loadProductsCache(){
     return [];
   }
 }
+/* =====================================================
+   IMAGE OFFLINE CACHE (THUMBNAILS)
+   Tujuan: semua gambar produk bisa tampil saat OFFLINE
+===================================================== */
+const IMG_CACHE_NAME = "pos_images_cache_v1";
+const IMG_OBJURL_MAP = new Map(); // url -> objectURL (biar tidak fetch ulang)
+
+function normalizeImgUrl(u){
+  return String(u || "").trim();
+}
+
+async function cacheImageUrl(url){
+  const u = normalizeImgUrl(url);
+  if(!u) return false;
+
+  // sudah pernah dibuat objectURL (berarti sudah ada cache), skip
+  if (IMG_OBJURL_MAP.has(u)) return true;
+
+  const cache = await caches.open(IMG_CACHE_NAME);
+  const hit = await cache.match(u);
+  if (hit) return true;
+
+  // kalau offline, tidak bisa fetch
+  if (!isOnline()) return false;
+
+  const res = await fetch(u, { cache: "no-store" });
+  if (!res.ok) return false;
+
+  await cache.put(u, res.clone());
+  return true;
+}
+
+async function getImageObjectUrl(url){
+  const u = normalizeImgUrl(url);
+  if(!u) return "";
+
+  if (IMG_OBJURL_MAP.has(u)) return IMG_OBJURL_MAP.get(u);
+
+  const cache = await caches.open(IMG_CACHE_NAME);
+  let hit = await cache.match(u);
+
+  // kalau belum ada di cache, coba download (kalau online)
+  if (!hit) {
+    const ok = await cacheImageUrl(u);
+    if (ok) hit = await cache.match(u);
+  }
+
+  if (!hit) return ""; // belum ada cache & tidak bisa fetch
+
+  const blob = await hit.blob();
+  const objUrl = URL.createObjectURL(blob);
+  IMG_OBJURL_MAP.set(u, objUrl);
+  return objUrl;
+}
+
+async function setProductImage(imgEl, url){
+  if(!imgEl) return;
+  const u = normalizeImgUrl(url);
+  if(!u){
+    imgEl.removeAttribute("src");
+    return;
+  }
+
+  // tampilkan cepat: kalau online, boleh pasang url dulu
+  // tapi kalau offline, akan blank → nanti kita ganti ke objectURL
+  if (isOnline()) imgEl.src = u;
+
+  try{
+    const objUrl = await getImageObjectUrl(u);
+    if (objUrl) imgEl.src = objUrl;
+    else if (!isOnline()) imgEl.removeAttribute("src");
+  }catch{
+    // fallback: biarkan src yang sudah ada
+  }
+}
+
+async function prefetchAllProductImages(){
+  // Ambil dari cache produk (paling stabil)
+  const list = loadProductsCache() || [];
+  const urls = [...new Set(list.map(p => normalizeImgUrl(p.thumbnail)).filter(Boolean))];
+
+  if(!urls.length){
+    updateSyncStatus("ℹ️ Tidak ada thumbnail untuk diunduh");
+    return;
+  }
+
+  if(!isOnline()){
+    updateSyncStatus("🔴 Offline: tidak bisa download gambar. Online dulu untuk caching.");
+    return;
+  }
+
+  updateSyncStatus(`⬇️ Download gambar 0/${urls.length}`);
+
+  let done = 0;
+  const concurrency = 8;
+  let idx = 0;
+
+  async function worker(){
+    while(idx < urls.length){
+      const my = idx++;
+      const u = urls[my];
+      try { await cacheImageUrl(u); } catch {}
+      done++;
+      if (done % 10 === 0 || done === urls.length){
+        updateSyncStatus(`⬇️ Download gambar ${done}/${urls.length}`);
+      }
+    }
+  }
+
+  const workers = Array.from({length: concurrency}, () => worker());
+  await Promise.all(workers);
+
+  localStorage.setItem("pos_images_cache_ts", String(Date.now()));
+  updateSyncStatus(`✅ Download gambar selesai (${done}/${urls.length})`);
+}
 
 /// ==============================
 // CACHE STALENESS (PRODUCTS)
@@ -750,17 +904,23 @@ async function syncAllProductsToCache(){
     saveProductsCache(all);
     localStorage.setItem("pos_products_cache_ts", String(Date.now()));
     console.log("✅ Cached products:", all.length);
+	// ✅ setelah produk cache terisi, download semua thumbnail
+prefetchAllProductImages().catch(err => console.warn("prefetch images err", err));
+
   }catch(err){
     console.error("❌ syncAllProductsToCache error:", err);
   }
 }
+let ONLINE_OK = true;
+let ONLINE_CHECKING = false;
 
 // ==============================
 // ONLINE / OFFLINE DETECTOR
 // ==============================
 function isOnline(){
-  return navigator.onLine === true;
+  return ONLINE_OK === true;
 }
+
 async function canReachSupabase(){
   if (!navigator.onLine) return false;
 
@@ -773,6 +933,25 @@ async function canReachSupabase(){
     return !error;
   } catch {
     return false;
+  }
+}
+async function refreshOnlineStatus(){
+  if (ONLINE_CHECKING) return;
+  ONLINE_CHECKING = true;
+
+  try{
+    const ok = await canReachSupabase(); // ini yang benar-benar ngetes koneksi
+    ONLINE_OK = !!ok;
+  }catch{
+    ONLINE_OK = false;
+  }finally{
+    ONLINE_CHECKING = false;
+  }
+
+  // kecil tapi penting: kasih tanda di UI
+  const el = document.getElementById("syncStatus");
+  if (el){
+    el.textContent = ONLINE_OK ? "🟢 Online" : "🔴 Offline";
   }
 }
 
@@ -1142,20 +1321,48 @@ document.addEventListener("click", (e) => {
 // ==============================
 // CARI PRODUK BERDASARKAN BARCODE (SCAN)
 // ==============================
-async function findProductByBarcode(barcode) {
-  if (!barcode) return null;
-
-  const { data, error } = await sb
-    .from("master_items")
-    .select("item_id,item_code,item_name,thumbnail,sell_price,barcode,available_qty")
-    .eq("barcode", barcode)
-    .limit(1)
-    .single();
-
-  if (error || !data) return null;
-  if (data.available_qty <= 0 && filters.requireStock) return null;
-  return data;
+function normalizeBarcode(raw){
+  return String(raw || "")
+    .trim()
+    .replace(/[^0-9A-Za-z]/g, "");
 }
+
+async function findProductByBarcode(barcode) {
+  const code = normalizeBarcode(barcode);
+  if (!code) return null;
+
+  const findInCache = () => {
+    const cached = loadProductsCache() || [];
+    const found = cached.find(p => normalizeBarcode(p.barcode) === code);
+    if (!found) return null;
+    if (filters?.requireStock && Number(found.available_qty || 0) <= 0) return null;
+    return found;
+  };
+
+  if (!isOnline()) {
+    return findInCache();
+  }
+
+  try {
+    const { data, error } = await sb
+      .from("master_items")
+      .select("item_id,item_code,item_name,thumbnail,sell_price,barcode,available_qty")
+      .eq("barcode", code)
+      .limit(1)
+      .single();
+
+    if (!error && data) {
+      if (filters?.requireStock && Number(data.available_qty || 0) <= 0) return null;
+      return data;
+    }
+
+    return findInCache();
+  } catch (e) {
+    return findInCache();
+  }
+}
+
+
 
 // simpan cart + customer ke localStorage
 function saveOrderState() {
@@ -1501,9 +1708,22 @@ if (sortMode === "az") {
 } else if (sortMode === "latest") {
   list.sort((a,b)=> Number(b.item_id||0) - Number(a.item_id||0));
 } else if (sortMode === "best") {
-  // offline tidak bisa ambil rank dari server, fallback A-Z
-  list.sort((a,b)=> String(a.item_name||"").localeCompare(String(b.item_name||""), "id"));
+  const rankMap = loadBestSellerRankCache(BEST_SELLER_PERIOD || "90d");   // cache server
+  const offCnt  = loadOfflineBestCounter();                               // counter offline
+
+  list.sort((a,b)=>{
+    const ca = Number(offCnt[String(a.item_code||"").trim()] || 0);
+    const cb = Number(offCnt[String(b.item_code||"").trim()] || 0);
+    if (cb !== ca) return cb - ca; // 1) qty offline desc
+
+    const ra = Number(rankMap[String(a.item_code||"").trim()] || 999999);
+    const rb = Number(rankMap[String(b.item_code||"").trim()] || 999999);
+    if (ra !== rb) return ra - rb; // 2) rank cache (lebih kecil = lebih laris)
+
+    return String(a.item_name||"").localeCompare(String(b.item_name||""), "id"); // 3) A-Z
+  });
 }
+
 
     // hitung pagination lokal (offline)
 const total = list.length;
@@ -1804,7 +2024,11 @@ if(!isOnline() || !supabaseOK){
 // BEST SELLER MAP (90 HARI)
 // ==========================
 async function loadBestSellerMap() {
-  if (!isOnline()) return {};
+  // OFFLINE: pakai cache terakhir yang tersimpan
+  if (!isOnline()) {
+    return loadBestSellerRankCache(BEST_SELLER_PERIOD || "90d");
+  }
+
 
   const { data, error } = await sb
   .from("product_best_sellers")       // ✅ BENAR
@@ -1813,23 +2037,23 @@ async function loadBestSellerMap() {
 
 
   if (error) {
-    console.error("loadBestSellerMap error", error);
-    return {};
-  }
+  console.error("loadBestSellerMap error", error);
+  // fallback: pakai cache terakhir
+  return loadBestSellerRankCache(BEST_SELLER_PERIOD || "90d");
+}
+
 
   const map = {};
   (data || []).forEach(r => {
     map[r.item_code] = r.rank_no;
   });
+  // ONLINE: simpan cache supaya bisa dipakai OFFLINE
+  saveBestSellerRankCache(BEST_SELLER_PERIOD || "90d", map);
 
   return map;
 }
 
 
-
-/* =====================================================
-   RENDER PRODUCTS
-===================================================== */
 function renderProducts(list){
   productGrid.innerHTML="";
   if(!list.length){
@@ -1838,40 +2062,44 @@ function renderProducts(list){
   }
 
   list.forEach(p=>{
-    const card=document.createElement("div");
-   const outOfStock = p.available_qty <= 0;
-const requireStock = filters.requireStock;
+    const card = document.createElement("div");
 
-// class:
-// - kalau stok 0 & requireStock ON -> locked (cursor not allowed)
-// - kalau stok 0 & requireStock OFF -> oos (redup tapi tetap pointer)
-let extraClass = "";
-if (outOfStock && requireStock) extraClass = " locked";
-else if (outOfStock && !requireStock) extraClass = " oos";
+    const outOfStock   = Number(p.available_qty || 0) <= 0;
+    const requireStock = !!filters.requireStock;
 
-card.className = "product-card" + extraClass;
+    let extraClass = "";
+    if (outOfStock && requireStock) extraClass = " locked";
+    else if (outOfStock && !requireStock) extraClass = " oos";
 
-if (!outOfStock || !requireStock) {
-  card.onclick = () => addToCart(p);
-}
+    card.className = "product-card" + extraClass;
 
+    if (!outOfStock || !requireStock) {
+      card.onclick = () => addToCart(p);
+    }
 
-    card.innerHTML=`
-      <img class="product-image" src="${p.thumbnail||""}">
+    card.innerHTML = `
+      <img class="product-image js-prod-img" data-src="${p.thumbnail||""}" src="">
       <div class="product-body">
         <div class="product-name">${p.item_name}</div>
       </div>
       <div class="product-footer">
         <div class="product-price js-price-hover" data-item-code="${p.item_code}">
-  ${formatRupiah(getFinalPrice(p.item_code, 1))}
-</div>
-
+          ${formatRupiah(getFinalPrice(p.item_code, 1))}
+        </div>
         <div class="product-stock">Stok ${p.available_qty}</div>
-      </div>`;
-        productGrid.appendChild(card);
+      </div>
+    `;
+
+    // ✅ set image dari cache (offline friendly) — HARUS DI DALAM forEach
+    const img = card.querySelector(".js-prod-img");
+    if (img) {
+      const u = img.getAttribute("data-src") || "";
+      setProductImage(img, u);
+    }
+
+    productGrid.appendChild(card);
   });
 
-  // ✅ apply short / normal SETELAH render selesai
   applyProductViewMode();
 }
 
@@ -3704,6 +3932,9 @@ if (hasPiutang) {
       const list = JSON.parse(localStorage.getItem(key) || "[]");
       list.push(offlineOrder);
       localStorage.setItem(key, JSON.stringify(list));
+	  // ✅ update terlaris lokal (offline)
+bumpOfflineBestCounter(offlineOrder.cart);
+
 
       // cetak struk pakai nomor LOCAL
       generateReceiptData(
@@ -5263,12 +5494,21 @@ bindPriceTooltipEvents();
 bindPaymentMethodButtons();
 	
   // 4️⃣ master data
-  await loadPriceMap();
-  await loadPackingMap();
-  await loadCustomers();
+ await refreshOnlineStatus();
+
+await loadPriceMap();
+await loadPackingMap();
+await loadCustomers();
+
 if (isOnline()) {
   await syncAllProductsToCacheIfNeeded();
 }
+window.addEventListener("online",  ()=> refreshOnlineStatus());
+window.addEventListener("offline", ()=> { ONLINE_OK = false; refreshOnlineStatus(); });
+
+// optional tapi bagus:
+setInterval(refreshOnlineStatus, 15000);
+
 
 
 
