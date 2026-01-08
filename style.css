@@ -2685,3 +2685,137 @@ body{
   color:#111 !important;
   font-weight:700;
 }
+/* =========================
+   HOLD MODAL (Transaksi Tersimpan)
+   - scroll aman jika list panjang
+   - header & footer tetap terlihat
+========================= */
+
+.hold-card{
+  width:720px;
+  max-width:94vw;
+  background:#fff;
+  border-radius:14px;
+  box-shadow:0 10px 30px rgba(0,0,0,.2);
+  overflow:hidden;
+
+  /* ✅ bikin modal punya tinggi maksimum */
+  max-height: min(78vh, 640px);
+
+  /* ✅ layout flex: header, body(scroll), footer */
+  display:flex;
+  flex-direction:column;
+}
+
+.hold-head{
+  padding:12px 14px;
+  border-bottom:1px solid #eee;
+  background:#fafafa;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+}
+
+.hold-head-title{
+  font-weight:800;
+  min-width:0;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.hold-head-actions{
+  display:flex;
+  gap:8px;
+  flex-shrink:0;
+}
+
+/* ✅ area scroll */
+.hold-body{
+  padding:14px;
+  overflow:auto;
+  -webkit-overflow-scrolling:touch;
+}
+
+/* box list */
+.hold-list-box{
+  border:1px solid #eee;
+  border-radius:12px;
+  overflow:hidden;
+  background:#fff;
+}
+
+/* footer tips */
+.hold-foot{
+  padding:10px 14px;
+  border-top:1px solid #eee;
+  color:#777;
+  font-size:12px;
+  background:#fff;
+}
+
+/* Mobile safe */
+@media (max-width: 640px){
+  .hold-card{
+    max-height: 82vh;
+  }
+}
+/* =========================
+   HOLD ACTION BUTTONS
+========================= */
+
+.hold-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+/* base */
+.hold-actions .btn-small{
+  padding:6px 12px;
+  font-size:12px;
+  border-radius:10px;
+  border:1px solid transparent;
+  cursor:pointer;
+  transition:all .15s ease;
+  white-space:nowrap;
+}
+
+/* PRIMARY: Lanjutkan */
+.hold-actions .btn-continue{
+  background:#22c55e;              /* hijau */
+  color:#fff;
+  border-color:#16a34a;
+}
+.hold-actions .btn-continue:hover{
+  background:#16a34a;
+}
+
+/* SECONDARY: Rename */
+.hold-actions .btn-rename{
+  background:#f8fafc;
+  color:#334155;
+  border-color:#cbd5e1;
+}
+.hold-actions .btn-rename:hover{
+  background:#e2e8f0;
+}
+
+/* DANGER: Hapus */
+.hold-actions .btn-delete{
+  background:#fff;
+  color:#dc2626;
+  border-color:#fca5a5;
+}
+.hold-actions .btn-delete:hover{
+  background:#fee2e2;
+}
+
+/* Mobile: tombol rata */
+@media (max-width:640px){
+  .hold-actions .btn-small{
+    flex:1 1 auto;
+    text-align:center;
+  }
+}
