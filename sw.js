@@ -1,5 +1,5 @@
 /* sw.js - Tasaji POS PWA (safe starter) */
-const CACHE_VERSION = "tasaji-pos-v1,4"; // ganti tiap release
+const CACHE_VERSION = "tasaji-pos-v1,5"; // ganti tiap release
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -53,6 +53,7 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
+
 
 
 
