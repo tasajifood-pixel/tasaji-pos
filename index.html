@@ -588,8 +588,8 @@
   padding-bottom:8px;
 ">
   <div style="display:flex; gap:6px; flex-wrap:wrap;">
-    <button class="btn-outline">🗂 Tersimpan</button>
-    <button class="btn-outline">💾 Simpan</button>
+    <button class="btn-outline" onclick="openHoldModal()">🗂 Tersimpan</button>
+    <button class="btn-outline" onclick="parkCurrentOrder()">💾 Simpan</button>
   </div>
 
   <!-- ✅ AREA TOMBOL TAMBAHAN (DRAFT) -->
@@ -766,7 +766,7 @@
 <!-- =====================================================
      HOLD / PARKED ORDERS (MODAL)
 ===================================================== -->
-<div id="holdModal" style="
+<div id="holdModal" class="hold-overlay" style="
   display:none;
   position:fixed;
   inset:0;
@@ -776,38 +776,27 @@
   justify-content:center;
   padding-top:30px;
 ">
-  <div style="
-    width:720px;
-    max-width:94vw;
-    background:#fff;
-    border-radius:14px;
-    box-shadow:0 10px 30px rgba(0,0,0,.2);
-    overflow:hidden;
-  ">
-    <div style="
-      padding:12px 14px;
-      border-bottom:1px solid #eee;
-      background:#fafafa;
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:10px;
-    ">
-      <div style="font-weight:800;">🗂 Transaksi Tersimpan</div>
-      <div style="display:flex; gap:8px;">
-        <button class="btn-outline">↻ Refresh</button>
-        <button class="btn-outline">Tutup</button>
+  <div class="hold-card">
+    <div class="hold-head">
+      <div class="hold-head-title">🗂 Transaksi Tersimpan</div>
+      <div class="hold-head-actions">
+        <button class="btn-outline" onclick="refreshHoldList()">↻ Refresh</button>
+        <button class="btn-outline" onclick="closeHoldModal()">Tutup</button>
       </div>
     </div>
 
-    <div style="padding:14px;">
-      <div id="holdList" style="border:1px solid #eee;border-radius:12px;overflow:hidden;"></div>
-      <div style="margin-top:10px;color:#777;font-size:12px;">
-        Tips: Simpan transaksi saat customer masih pilih-pilih, supaya kasir bisa lanjut transaksi lain dulu.
-      </div>
+    <!-- ✅ BODY SCROLL AREA -->
+    <div class="hold-body">
+      <div id="holdList" class="hold-list-box"></div>
+    </div>
+
+    <!-- ✅ FOOTER (TIPS) TETAP DI BAWAH -->
+    <div class="hold-foot">
+      Tips: Simpan transaksi saat customer masih pilih-pilih, supaya kasir bisa lanjut transaksi lain dulu.
     </div>
   </div>
 </div>
+
 <!-- MODAL BAYAR / CICIL PIUTANG -->
 <div id="piutangPayModal" class="modal hidden">
   <div class="modal-box">
