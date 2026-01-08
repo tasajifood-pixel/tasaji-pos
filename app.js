@@ -190,6 +190,15 @@ async function fetchCanceledOrdersByISO(startISO, endISO) {
    DOM REFS
 ===================================================== */
 const panelReport = document.getElementById("panel-report");
+const panelPiutang = document.getElementById("panel-piutang");
+
+// PIUTANG MONITOR DOM
+const piutangList = document.getElementById("piutangList");
+const piutangCountInfo = document.getElementById("piutangCountInfo");
+const piutangTotalInfo = document.getElementById("piutangTotalInfo");
+
+const piutangSort = document.getElementById("piutangSort");
+const btnPiutangRefresh = document.getElementById("btnPiutangRefresh");
 
 const productGrid = document.getElementById("productGrid");
 const pageInfo = document.getElementById("pageInfo");
@@ -317,18 +326,6 @@ let PAYMENT_LINES = []; // [{ method:'cash', label:'Kas', amount:20000 }]
 
 let CUSTOMER_LIST = [];
 let ACTIVE_CUSTOMER = null;
-
-function getActiveCustomerInfo(){
-  // Untuk Draft & Picking List
-  if (!ACTIVE_CUSTOMER) return "Pelanggan Umum";
-  const name = String(ACTIVE_CUSTOMER.contact_name || "").trim() || "Pelanggan Umum";
-  const phone = String(ACTIVE_CUSTOMER.phone || "").trim();
-  const cat = String(ACTIVE_CUSTOMER.category_display || "").trim();
-
-  const left = phone ? `${name} - ${phone}` : name;
-  return cat ? `${left} (${cat})` : left;
-}
-
 // ===== STEP 3: Price history (P prev) =====
 let LAST_PRICE_HISTORY = {}; // { [item_id]: { pPrev:number, dateIso:string } }
 // ✅ COST HISTORY (baru)
@@ -1371,6 +1368,8 @@ function setActiveTabBtn(key){
   document.getElementById("tabTxn").classList.toggle("active", key==="txn");
   document.getElementById("tabSet").classList.toggle("active", key==="set");
   document.getElementById("tabReport").classList.toggle("active", key==="report");
+  const tP = document.getElementById("tabPiutang");
+  if (tP) tP.classList.toggle("active", key==="piutang");
 }
 
 
@@ -1407,6 +1406,7 @@ function switchLeftTab(key){
   panelTransactions.style.display = "none";
   panelSettings.style.display = "none";
   panelReport.style.display = "none";
+  if (panelPiutang) panelPiutang.style.display = "none";
 
   
 
@@ -1444,6 +1444,13 @@ if (key === "report") {
   if (cartPanel) cartPanel.style.display = "none";
   initReportUI();
   loadReport();
+}
+
+if (key === "piutang") {
+  if (panelPiutang) panelPiutang.style.display = "flex";
+  if (cartPanel) cartPanel.style.display = "none";
+  initPiutangUI();
+  loadPiutangMonitor(true);
 }
 
 }
@@ -5371,6 +5378,178 @@ function initReportUI(){
   loadReport(true);
 }
 
+/* =====================================================
+   PIUTANG MONITOR (VERSI 1 - LIST BELUM LUNAS)
+===================================================== */
+let PIUTANG_UI_BOUND = false;
+
+function initPiutangUI(){
+  if (PIUTANG_UI_BOUND) return;
+  PIUTANG_UI_BOUND = true;
+
+  // default: terlama
+  if (piutangSort && !piutangSort.value) piutangSort.value = "oldest";
+
+  piutangSort?.addEventListener("change", () => loadPiutangMonitor(true));
+  btnPiutangRefresh?.addEventListener("click", () => loadPiutangMonitor(true));
+}
+
+function getPiutangSortOrder(){
+  const v = String(piutangSort?.value || "oldest");
+  if (v === "newest") return { by: "transaction_date", ascending: false };
+  if (v === "largest") return { by: "grand_total", ascending: false };
+  if (v === "smallest") return { by: "grand_total", ascending: true };
+  // oldest
+  return { by: "transaction_date", ascending: true };
+}
+
+async function loadPiutangMonitor(force){
+  if (!piutangList) return;
+
+  // OFFLINE: sementara tampil pesan (piutang monitor butuh data server)
+  if (!isOnline()) {
+    piutangList.innerHTML = `
+      <div style="padding:16px;color:#999;">
+        ⚠️ Piutang Monitor butuh koneksi internet (data dari server).
+      </div>
+    `;
+    if (piutangCountInfo) piutangCountInfo.textContent = "Total: 0 piutang";
+	if (piutangTotalInfo) piutangTotalInfo.textContent = "Total Piutang: Rp 0";
+
+    return;
+  }
+
+  try {
+    piutangList.innerHTML = `<div style="padding:12px;color:#999;">Memuat...</div>`;
+
+    const ord = getPiutangSortOrder();
+
+    // Versi 1 (AMAN): pakai kolom existing dulu
+    // - is_paid = false
+    // - payment_method mengandung "piutang"
+    let q = sb
+      .from("pos_sales_orders")
+      .select("salesorder_no,transaction_date,customer_name,shipping_phone,grand_total,payment_method,is_paid")
+      .eq("is_paid", false)
+      .ilike("payment_method", "%piutang%")
+      .order(ord.by, { ascending: ord.ascending })
+      .limit(500);
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    const rows = data || [];
+CURRENT_PIUTANG_ROWS = rows;
+
+    if (piutangCountInfo) piutangCountInfo.textContent = `Total: ${rows.length} piutang`;
+
+    if (!rows.length) {
+      piutangList.innerHTML = `
+        <div style="padding:16px;color:#666;">
+          ✅ Tidak ada piutang yang belum lunas.
+        </div>
+      `;
+      return;
+    }
+
+    
+    // Ambil total pembayaran per salesorder_no (untuk hitung sisa piutang)
+    const orderNos = rows.map(r => r.salesorder_no).filter(Boolean);
+    let paidMap = {};
+    if (orderNos.length > 0){
+      const { data: payRows, error: payErr } = await sb
+        .from("pos_sales_order_payments")
+        .select("salesorder_no, amount")
+        .in("salesorder_no", orderNos);
+
+      if (payErr){
+        console.warn("⚠️ Gagal ambil payment piutang, fallback sisa=grand_total", payErr);
+      } else {
+        (payRows || []).forEach(p => {
+          const k = p.salesorder_no;
+          paidMap[k] = (paidMap[k] || 0) + Number(p.amount || 0);
+        });
+      }
+    }
+
+// tempel paid_total & outstanding_amount ke setiap row (WAJIB untuk UI)
+rows.forEach(r => {
+  const paid = Number(paidMap[r.salesorder_no] || 0);
+  const total = Number(r.grand_total || 0);
+
+  r.paid_total = paid;
+  r.outstanding_amount = Math.max(0, total - paid);
+});
+// hitung total piutang (akumulasi Sisa)
+const totalPiutang = rows.reduce((sum, r) => sum + Number(r.outstanding_amount || 0), 0);
+
+// tampilkan di header
+if (window.piutangTotalInfo) {
+  window.piutangTotalInfo.textContent = `Total Piutang: ${formatRupiah(totalPiutang)}`;
+} else if (typeof piutangTotalInfo !== "undefined" && piutangTotalInfo) {
+  // kalau Abi pakai const piutangTotalInfo (lebih rapi)
+  piutangTotalInfo.textContent = `Total Piutang: ${formatRupiah(totalPiutang)}`;
+}
+
+    // dipakai oleh tombol 'Bayar/Cicil'
+    window.PIUTANG_ROWS = rows;
+
+piutangList.innerHTML = rows.map((r,i) => {
+      const no = r.salesorder_no || "-";
+      const dt = r.transaction_date ? formatDateID(r.transaction_date) : "-";
+      const cust = r.customer_name || "Pelanggan Umum";
+      const phone = r.shipping_phone || "";
+      const total = Number(r.grand_total || 0);
+      const phoneHtml = phone ? `<div style="font-size:12px;color:#666;margin-top:2px;">${escapeHtml(phone)}</div>` : "";
+
+      return `
+        <div class="piutang-item">
+          <div class="piutang-row">
+            <div>
+              <div class="piutang-no">${escapeHtml(no)}</div>
+              <div class="piutang-dt">${escapeHtml(dt)}</div>
+            </div>
+
+            <div>
+              <div class="piutang-cust">${escapeHtml(cust)}</div>
+              ${phone ? `<div class="piutang-phone">${escapeHtml(phone)}</div>` : `<div class="piutang-phone">-</div>`}
+            </div>
+
+            <div class="piutang-amt">
+              <div class="piutang-total">${formatRupiah(total)}</div>
+              <div class="piutang-sisa">Sisa: <b>${formatRupiah(Number(r.outstanding_amount||0))}</b></div>
+            </div>
+
+            <div class="piutang-right">
+              <span class="badge unpaid">${(Number(r.paid_total||0)>0 ? "CICIL" : "BELUM BAYAR")}</span>
+              <div class="piutang-actions">
+                <button class="btn-primary-sm" onclick="openPiutangModalByIdx(${i})">Bayar/Cicil</button>
+                ${phone
+  ? `<button class="btn-outline" type="button" onclick="remindPiutangWAByIdx(${i})">Ingatkan WA</button>`
+  : `<button class="btn-outline" type="button" disabled>Ingatkan WA</button>`
+}
+
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }).join("");
+
+  } catch (err) {
+    console.error("❌ loadPiutangMonitor error:", err);
+    piutangList.innerHTML = `
+      <div style="padding:16px;color:#c00;">
+        Gagal memuat Piutang Monitor. Cek Console (F12).
+      </div>
+    `;
+    if (piutangCountInfo) piutangCountInfo.textContent = "Total: 0 piutang";
+	if (typeof piutangTotalInfo !== "undefined" && piutangTotalInfo) {
+  piutangTotalInfo.textContent = "Total Piutang: Rp 0";
+}
+
+  }
+}
+
 // VISI ABI: Metode Pembayaran bukan card terpisah
 const paymentCard = document.getElementById("reportPaymentCard");
 if (paymentCard) paymentCard.style.display = "none";
@@ -5391,8 +5570,8 @@ function normPayKey(label){
 
   // TRANSFER
   if (t.includes("transfer bca")) return "Transfer BCA";
-  if (t.includes("transfer mandiri")) return "Transfer Mandiri";
   // PIUTANG
+  if (t.includes("transfer mandiri")) return "Transfer Mandiri";
   if (t.includes("piutang")) return "Piutang";
 
   return "Lainnya";
@@ -5568,17 +5747,39 @@ function computeAppliedPayment(total, payList){
     }
 
   }
-
   const remainingForCash = Math.max(0, Number(total || 0) - sumNonCash);
-  const cashApplied = Math.min(sumCash, remainingForCash);
+const cashApplied = Math.min(sumCash, remainingForCash);
 
-  // hasil final yang “benar” untuk laporan
-  return {
-    applied: {
-      ...sumByKey,
-      Cash: cashApplied
-    }
-  };
+// ✅ Piutang = sisa yang belum dibayar
+const paidTotal = cashApplied + sumNonCash;
+const piutangAmt = Math.max(0, Number(total || 0) - paidTotal);
+
+/* ===== AUDIT WARNING (DEV) ===== */
+const checkSum = paidTotal + piutangAmt;
+const t = Number(total || 0);
+if (Math.abs(checkSum - t) > 0.5) {
+  console.warn("[AUDIT] mismatch computeAppliedPayment", {
+    total: t,
+    sumCash,
+    sumNonCash,
+    cashApplied,
+    paidTotal,
+    piutangAmt,
+    checkSum,
+    payList
+  });
+}
+/* ============================== */
+
+// hasil final yang “benar” untuk laporan
+return {
+  applied: {
+    ...sumByKey,
+    Cash: cashApplied,
+    Piutang: piutangAmt
+  }
+};
+
   }
 async function loadReport(forceRefresh){
   console.log("LOAD REPORT DIPANGGIL");
@@ -5695,6 +5896,7 @@ async function loadReport(forceRefresh){
         piutang: Number(appliedObj["Piutang"] || 0)
       });
     }
+
 
     // ======================
     // B) ONLINE (Supabase)
@@ -5822,6 +6024,9 @@ const tabSales = document.getElementById("tabSales");
   const tabReport = document.getElementById("tabReport");
   if (tabReport) tabReport.setAttribute("onclick", "switchLeftTab(\'report\')");
 
+  const tabPiutang = document.getElementById("tabPiutang");
+  if (tabPiutang) tabPiutang.setAttribute("onclick", "switchLeftTab(\'piutang\')");
+
   const logoutBtn = document.querySelector(".logout-btn");
   if (logoutBtn) logoutBtn.setAttribute("onclick", "logout()");
 
@@ -5902,6 +6107,9 @@ document.addEventListener("DOMContentLoaded", () => {
   } else {
     console.warn("[WA_CHECKBOX] element not found");
   }
+
+  // === PIUTANG MODAL INIT ===
+  setupPiutangModalUI();
 });
 // ===============================
 // DRAFT CART (SEBELUM BAYAR)
@@ -5950,7 +6158,7 @@ function buildDraftHTML(){
     <div style="text-align:center; font-weight:900; font-size:14px;">TASAJI FOOD</div>
     <div style="text-align:center; font-size:12px; margin-top:2px;">DRAFT (BELUM DIBAYAR)</div>
     <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
-    <div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerInfo())}</div>
+    <div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerLabel())}</div>
     <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
   `;
 
@@ -6018,6 +6226,7 @@ function buildDraftText(){
   lines.push("TASAJI FOOD");
   lines.push("DRAFT (BELUM DIBAYAR)");
   if(cashierText) lines.push(cashierText);
+  lines.push(`Pelanggan: ${getActiveCustomerLabel()}`);
   lines.push("------------------------------");
 
   cart.forEach(it => {
@@ -6082,6 +6291,24 @@ function escapeHtml(s){
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
+
+
+function getActiveCustomerLabel(){
+  // Format untuk Draft & Picking List:
+  // - Kalau tidak ada pelanggan aktif => "UMUM"
+  // - Kalau ada => "Nama (Kategori) • 08xxxx" (phone opsional)
+  const name = (ACTIVE_CUSTOMER?.contact_name != null) ? String(ACTIVE_CUSTOMER.contact_name).trim() : "";
+  const cat  = (ACTIVE_CUSTOMER?.category_display != null) ? String(ACTIVE_CUSTOMER.category_display).trim() : "";
+  const phone = (ACTIVE_CUSTOMER?.phone != null) ? String(ACTIVE_CUSTOMER.phone).trim() : "";
+
+  if(!name) return "UMUM";
+
+  let out = name;
+  if(cat) out += ` (${cat})`;
+  if(phone) out += ` • ${phone}`;
+  return out;
+}
+
   const btnGudang = document.getElementById("btnGudangList");
   if(btnGudang){
     btnGudang.addEventListener("click", openGudangModal);
@@ -6122,7 +6349,10 @@ function buildGudangHTML(){
     <div style="text-align:center; font-weight:900; font-size:14px;">TASAJI FOOD</div>
     <div style="text-align:center; font-size:12px; margin-top:2px;">PICKING LIST (INTERNAL)</div>
     <div style="text-align:center; font-size:11px; color:#666; margin-top:6px;">${escapeHtml(cashierText)}</div>
-    <div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">Pelanggan: ${escapeHtml(getActiveCustomerInfo())}</div>
+	<div style="text-align:center; font-size:11px; color:#666; margin-top:4px;">
+  Pelanggan: ${escapeHtml(getActiveCustomerLabel())}
+</div>
+
     <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
   `;
 
@@ -6169,6 +6399,7 @@ function buildGudangText(){
   lines.push("TASAJI FOOD");
   lines.push("PICKING LIST (INTERNAL)");
   if(cashierText) lines.push(cashierText);
+  lines.push(`Pelanggan: ${getActiveCustomerLabel()}`);
   lines.push("------------------------------");
 
   cart.forEach(it => {
@@ -6199,6 +6430,58 @@ function copyGudangText(){
     alert("Gagal copy. Coba print / screenshot.");
   });
 }
+function normalizePhoneTo62(raw) {
+  if (!raw) return "";
+  let p = String(raw).replace(/[^\d]/g, ""); // buang spasi, +, -, dll
+  if (!p) return "";
+
+  // contoh: 0812xxxx -> 62812xxxx
+  if (p.startsWith("0")) p = "62" + p.slice(1);
+
+  // kalau sudah 62 biarkan
+  if (p.startsWith("62")) return p;
+
+  // kalau user masukin tanpa 0/62 (misal 812xxx), kita paksa 62
+  if (p.startsWith("8")) return "62" + p;
+
+  return p;
+}
+
+function formatRupiahPlain(num) {
+  const n = Number(num || 0);
+  return "Rp " + n.toLocaleString("id-ID");
+}
+
+function remindPiutangWAByIdx(i) {
+  try {
+    const r = (window.PIUTANG_ROWS || CURRENT_PIUTANG_ROWS || [])?.[i];
+    if (!r) return alert("Data piutang tidak ditemukan.");
+
+   const phone62 = normalizePhoneTo62(
+  r.shipping_phone || r.customer_phone || r.phone || r.customer?.phone || ""
+);
+
+    if (!phone62) return alert("Nomor WA pelanggan kosong.");
+
+    const orderNo = r.salesorder_no || "-";
+    const cust = r.customer_name || r.customer || "Pelanggan";
+    const sisa = Number(r.outstanding_amount || 0);
+
+    const msg =
+`Assalamu'alaikum Kak ${cust}.
+Kami dari Tasaji.
+
+Menginfokan untuk transaksi *${orderNo}* masih ada sisa tagihan sebesar *${formatRupiahPlain(sisa)}*.
+
+Mohon dibantu pelunasannya ya Kak. Terima kasih.`;
+
+    const url = `https://wa.me/${phone62}?text=${encodeURIComponent(msg)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (e) {
+    console.error("remindPiutangWAByIdx error:", e);
+    alert("Gagal membuka WhatsApp. Cek Console.");
+  }
+}
 
 function printGudang(){
   const html = buildGudangHTML();
@@ -6228,3 +6511,234 @@ function printGudang(){
   `);
   w.document.close();
 }
+let CURRENT_PIUTANG_ORDER = null;
+
+
+function setupPiutangModalUI(){
+  const selMethod = document.getElementById("piutangMethod");
+  const bankRow = document.getElementById("piutangBankRow");
+  const bankSel = document.getElementById("piutangBankAccount");
+  if (!selMethod || !bankRow || !bankSel) return;
+
+ function fillAccounts(bankKey){
+  bankSel.innerHTML = `<option value="">Pilih rekening</option>`;
+  const list = BANK_ACCOUNTS?.[bankKey] || [];
+
+  list.forEach(acc => {
+    const label = `${acc.acc_no} — AN. ${acc.acc_name}`;
+    const opt = document.createElement("option");
+    opt.value = acc.id;
+    opt.textContent = label;
+    bankSel.appendChild(opt);
+  });
+}
+
+
+  function onChange(){
+    const v = String(selMethod.value || "");
+    const be = document.getElementById("piutangBankError");
+    if (be) be.classList.add("hidden");
+    bankSel.value = "";
+
+    if (v === "Transfer BCA"){
+      fillAccounts("bca");
+      bankRow.classList.remove("hidden");
+    } else if (v === "Transfer Mandiri"){
+      fillAccounts("mandiri");
+      bankRow.classList.remove("hidden");
+    } else {
+      bankRow.classList.add("hidden");
+    }
+  }
+
+  selMethod.addEventListener("change", onChange);
+  onChange();
+}
+
+function openPiutangModal(order){
+  CURRENT_PIUTANG_ORDER = order;
+
+  // 🔒 hitung sisa piutang dengan fallback aman
+  const sisa = Number(
+    order.outstanding_amount ??
+    order.grand_total ??
+    0
+  );
+
+  // ⚠️ JANGAN pakai toLocaleString di input angka
+  document.getElementById('piutangSisa').value = sisa;
+  document.getElementById('piutangBayar').value = sisa;
+
+  // reset metode & rekening
+  const selMethod = document.getElementById('piutangMethod');
+  const bankSel  = document.getElementById('piutangBankAccount');
+
+  if (selMethod) selMethod.value = '';
+  if (bankSel) {
+    bankSel.innerHTML = '<option value="">Pilih rekening</option>';
+    bankSel.value = '';
+  }
+
+  hidePiutangErrors();
+
+  // setup ulang UI setelah reset
+  setupPiutangModalUI();
+
+  document.getElementById('piutangPayModal').classList.remove('hidden');
+}
+
+
+
+function showPiutangError(msg){
+  const el = document.getElementById('piutangError');
+  if (!el) return;
+  el.textContent = msg || "Terjadi kesalahan.";
+  el.classList.remove('hidden');
+}
+
+function hidePiutangErrors(){
+  const e1 = document.getElementById('piutangError');
+  const e2 = document.getElementById('piutangBankError');
+  if (e1) e1.classList.add('hidden');
+  if (e2) e2.classList.add('hidden');
+}
+
+/**
+ * Bayar / Cicil Piutang:
+ * - Insert 1 baris payment ke pos_sales_order_payments
+ * - Jika total pembayaran >= grand_total -> pos_sales_orders.is_paid=true dan payment_method jadi metode final
+ * - Jika belum lunas -> pos_sales_orders tetap is_paid=false dan payment_method tetap mengandung 'Piutang'
+ */
+async function submitPiutangPayment(){
+  try{
+    if (!CURRENT_PIUTANG_ORDER) return;
+
+    hidePiutangErrors();
+
+    const orderNo = CURRENT_PIUTANG_ORDER.salesorder_no;
+    const grandTotal = Number(CURRENT_PIUTANG_ORDER.grand_total || 0);
+  const sisa = Number(
+  CURRENT_PIUTANG_ORDER.outstanding_amount ?? (grandTotal - Number(CURRENT_PIUTANG_ORDER.paid_total || 0)) ?? 0
+);
+
+
+
+    let bayar = Number(document.getElementById('piutangBayar')?.value || 0);
+    const method = String(document.getElementById('piutangMethod')?.value || "").trim();
+
+    if (!bayar || bayar <= 0){
+      return showPiutangError("Nominal bayar harus lebih dari 0.");
+    }
+    if (bayar > sisa){
+      return showPiutangError("Nominal melebihi sisa piutang.");
+    }
+    if (!method){
+      return showPiutangError("Pilih metode pembayaran.");
+    }
+
+    // rekening (khusus transfer)
+    let accountKey = "";
+    let accountInfo = "";
+    if (method === "Transfer BCA" || method === "Transfer Mandiri"){
+  accountKey = String(document.getElementById('piutangBankAccount')?.value || "").trim();
+  if (!accountKey){
+    const be = document.getElementById('piutangBankError');
+    if (be) be.classList.remove('hidden');
+    return;
+  }
+
+  const bank = (method === "Transfer BCA") ? "bca" : "mandiri";
+  const acc = (BANK_ACCOUNTS?.[bank] || []).find(a => a.id === accountKey);
+  if (acc){
+    accountInfo = ` | ${acc.acc_name} | ${acc.acc_no}`;
+  }
+}
+
+
+    const paymentLabel = `${method}${accountKey ? ` | ${accountKey}` : ""}${accountInfo}`;
+
+
+    // Insert payment row
+    const { error: insErr } = await sb
+      .from("pos_sales_order_payments")
+      .insert([{
+        salesorder_no: orderNo,
+        payment_method: paymentLabel,
+        amount: bayar
+      }]);
+
+    if (insErr){
+      console.error("❌ Gagal simpan cicilan piutang", insErr);
+      return showPiutangError("Gagal menyimpan pembayaran. Cek koneksi / Supabase.");
+    }
+
+    // Hitung total pembayaran untuk order ini
+    const { data: payRows, error: payErr } = await sb
+      .from("pos_sales_order_payments")
+      .select("amount")
+      .eq("salesorder_no", orderNo);
+
+    if (payErr){
+      console.error("❌ Gagal ambil riwayat payment", payErr);
+      return showPiutangError("Pembayaran tersimpan, tapi gagal refresh data. Coba refresh halaman.");
+    }
+
+    const paidTotal = (payRows || []).reduce((s, r) => s + Number(r.amount || 0), 0);
+    const isLunas = paidTotal >= grandTotal - 0.0001;
+
+    // Update header order
+ // Update header order
+if (isLunas){
+  const { error: upErr } = await sb
+    .from("pos_sales_orders")
+    .update({
+      is_paid: true,
+      payment_method: paymentLabel
+    })
+    .eq("salesorder_no", orderNo);
+
+  if (upErr){
+    console.error("❌ Gagal update order lunas", upErr);
+    showPiutangError("Pembayaran tersimpan, tapi gagal menandai lunas. Coba refresh lalu cek lagi.");
+    return;
+  }
+} else {
+  const { error: upErr2 } = await sb
+    .from("pos_sales_orders")
+    .update({
+      is_paid: false,
+      payment_method: "Piutang"
+    })
+    .eq("salesorder_no", orderNo);
+
+  if (upErr2){
+    console.error("❌ Gagal update order cicil", upErr2);
+    showPiutangError("Pembayaran tersimpan, tapi gagal update status piutang. Coba refresh lalu cek lagi.");
+    return;
+  }
+}
+
+closePiutangModal();
+await loadPiutangMonitor(true);
+
+
+  } catch(err){
+    console.error("❌ submitPiutangPayment error", err);
+    showPiutangError("Terjadi error saat simpan pembayaran. Cek console (F12).");
+  }
+}
+
+function closePiutangModal(){
+  const modal = document.getElementById('piutangPayModal');
+  if (modal) modal.classList.add('hidden');
+  CURRENT_PIUTANG_ORDER = null;
+}
+
+
+window.PIUTANG_ROWS = [];
+
+window.openPiutangModalByIdx = function(idx){
+  const order = window.PIUTANG_ROWS[idx];
+  if (!order) return alert("Data piutang tidak ditemukan.");
+  openPiutangModal(order);
+};
