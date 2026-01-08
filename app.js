@@ -3558,6 +3558,33 @@ async function processPayment() {
     } else {
       console.log("[FINISH_PAYMENT] MODE = PRINT");
     }
+// === VALIDASI PIUTANG: WAJIB PILIH PELANGGAN (NON-UMUM) + WAJIB ADA NO TELP ===
+const hasPiutang = (PAYMENT_LINES || []).some(p => p.method === "piutang");
+if (hasPiutang) {
+  const cid = (ACTIVE_CUSTOMER && ACTIVE_CUSTOMER.contact_id != null) ? ACTIVE_CUSTOMER.contact_id : -1;
+  const cname = String(ACTIVE_CUSTOMER?.contact_name || "Pelanggan Umum").trim();
+
+  const isUmum =
+    (cid === -1) ||
+    /^umum$/i.test(cname) ||
+    /^pelanggan\s*umum$/i.test(cname);
+
+  if (isUmum) {
+    alert("Pembayaran PIUTANG hanya untuk pelanggan selain Pelanggan Umum.\nPilih pelanggan dulu.");
+    console.warn("[PIUTANG_VALIDATION] blocked: customer umum");
+    return; // STOP
+  }
+
+  const phone62 = normalizePhoneTo62(ACTIVE_CUSTOMER?.phone || "");
+  if (!phone62) {
+    alert("Pembayaran PIUTANG wajib ada No. Telp/WA pelanggan.\nIsi nomor di data pelanggan (Master) atau pilih pelanggan yang sudah ada nomornya.");
+    console.warn("[PIUTANG_VALIDATION] blocked: missing phone");
+    return; // STOP
+  }
+
+  // simpan balik dalam format 62 biar konsisten ke DB + WA reminder
+  ACTIVE_CUSTOMER.phone = phone62;
+}
 
     // === WA TARGET DETECTION (TAHAP 4) ===
     if (isWaMode) {
@@ -3698,47 +3725,84 @@ async function processPayment() {
       return;
     }
 
-    // ======================
-    // ONLINE MODE (Supabase)
-    // ======================
-    try {
-      // ✅ 1. PASTIKAN item_id SEMUA VALID
-      await hydrateCartItemIds();
+// ======================
+// ONLINE MODE (Supabase)
+// ======================
 
-      // ✅ 2. SIMPAN HEADER
-      const order = await saveSalesOrderHeader();
+// ✅ Pisahkan SAVE vs POST-SAVE (print/reset) supaya error print tidak dianggap gagal simpan
+let order = null;
+let __saveStep = "START";
 
-      // ✅ 3. SIMPAN ITEMS
-      await saveSalesOrderItems(order.salesorder_no);
+// (A) SAVE KE SUPABASE
+try {
+  __saveStep = "HYDRATE_ITEM_IDS";
+  await hydrateCartItemIds();
 
-      // ✅ 4. SIMPAN PAYMENTS
-      await saveSalesOrderPayments(order.salesorder_no);
+  __saveStep = "SAVE_HEADER";
+  order = await saveSalesOrderHeader();
 
-      // hapus dari transaksi tersimpan (jika ada)
-      removeCurrentHoldIfAny();
+  __saveStep = "SAVE_ITEMS";
+  await saveSalesOrderItems(order.salesorder_no);
 
-      // cetak struk (print otomatis ada di dalamnya)
-      generateReceiptData(
-        order.salesorder_no,
-        cart,
-        PAYMENT_LINES,
-        order,
-        { fromPayment: true }
-      );
+  __saveStep = "SAVE_PAYMENTS";
+  await saveSalesOrderPayments(order.salesorder_no);
 
-      // reset transaksi SETELAH print dipanggil
-      resetAll();
+} catch (err) {
+  console.error("❌ SAVE error step =", __saveStep, err);
 
-    } catch (err) {
-      console.error("❌ processPayment error:", err);
+  // ✅ Kalau header sudah sempat tersimpan, jangan reset nomor order & jangan bilang gagal simpan total
+  if (order && order.salesorder_no) {
+    alert(
+      "Transaksi kemungkinan sudah terbentuk: " + order.salesorder_no + "\n" +
+      "Namun terjadi kendala saat menyimpan detail/pembayaran.\n" +
+      "Silakan cek menu Transaksi untuk memastikan.\n" +
+      "Jika belum lengkap, ulangi pembayaran / perbaiki data."
+    );
+    return;
+  }
 
-      CURRENT_SALESORDER_NO = null;
-      localStorage.removeItem("pos_salesorder_no");
-      updateOrderNumberUI();
+  // ❌ Kalau header belum tersimpan, baru reset seperti sebelumnya
+  CURRENT_SALESORDER_NO = null;
+  localStorage.removeItem("pos_salesorder_no");
+  updateOrderNumberUI();
 
-      alert("Gagal menyimpan transaksi.\nNomor order di-reset.\nSilakan coba lagi.");
-      return;
-    }
+  alert("Gagal menyimpan transaksi.\nNomor order di-reset.\nSilakan coba lagi.");
+  return;
+}
+
+// (B) POST-SAVE: PRINT / CLEANUP / RESET
+try {
+  // hapus dari transaksi tersimpan (jika ada)
+  removeCurrentHoldIfAny();
+
+  // khusus PIUTANG: paksa tetap print (biar struk muncul walau ada mode WA/setting lain)
+  const forcePrintPiutang = (PAYMENT_LINES || []).some(x => x.method === "piutang");
+
+  // cetak struk (print otomatis ada di dalamnya)
+  generateReceiptData(
+    order.salesorder_no,
+    cart,
+    PAYMENT_LINES,
+    order,
+    { fromPayment: true, forcePrint: forcePrintPiutang }
+  );
+
+  // reset transaksi SETELAH print dipanggil
+  resetAll();
+
+} catch (postErr) {
+  console.error("⚠️ POST-SAVE error (print/cleanup):", postErr);
+
+  alert(
+    "Transaksi sudah tersimpan: " + (order?.salesorder_no || "-") + "\n" +
+    "Namun terjadi kendala saat menampilkan/print struk.\n" +
+    "Silakan buka menu Transaksi untuk reprint."
+  );
+
+  // tetap reset biar bisa lanjut transaksi berikutnya
+  try { resetAll(); } catch (_e) {}
+}
+
 
   } finally {
     // ✅ WAJIB: biar gak nyangkut kalau ada return di tengah
@@ -3833,7 +3897,7 @@ async function saveSalesOrderHeader() {
 	cashier_name: CASHIER_NAME || "UNKNOWN",
     contact_id: ACTIVE_CUSTOMER?.contact_id ?? -1,
     customer_name: ACTIVE_CUSTOMER?.contact_name ?? "Pelanggan Umum",
-    shipping_phone: ACTIVE_CUSTOMER?.phone ?? null,
+    shipping_phone: normalizePhoneTo62(ACTIVE_CUSTOMER?.phone ?? "") || null,
     transaction_date: new Date().toISOString(),
     sub_total: calcTotal(),
     grand_total: calcTotal(),
@@ -3898,10 +3962,16 @@ async function saveSalesOrderItems(salesorderNo) {
 async function saveSalesOrderPayments(salesorderNo) {
   if (!PAYMENT_LINES || PAYMENT_LINES.length === 0) return;
 
-  const paymentsPayload = PAYMENT_LINES.map(p => ({
+  // ✅ PIUTANG bukan pembayaran -> jangan disimpan ke pos_sales_order_payments
+  const realPays = PAYMENT_LINES.filter(p => p.method !== "piutang");
+
+  // kalau tidak ada pembayaran nyata (misal full piutang), tidak perlu insert payments
+  if (realPays.length === 0) return;
+
+  const paymentsPayload = realPays.map(p => ({
     salesorder_no: salesorderNo,
     payment_method: p.label,
-    amount: p.amount
+    amount: Number(p.amount || 0)
   }));
 
   const { error } = await sb
@@ -3909,10 +3979,12 @@ async function saveSalesOrderPayments(salesorderNo) {
     .insert(paymentsPayload);
 
   if (error) {
-    console.error("❌ Gagal simpan pembayaran", error);
+    console.error("❌ Gagal simpan pembayaran", JSON.stringify(error, null, 2));
+
     throw error;
   }
 }
+
 
 /* =====================================================
    STRUK: GENERATE DARI DATA (reprint / selesai bayar)
@@ -4174,7 +4246,7 @@ async function syncOfflineOrdersToServer(){
         cashier_name: off.cashier_name || "OFFLINE",
         contact_id: off.customer?.contact_id ?? -1,
         customer_name: off.customer?.contact_name || "Pelanggan Umum",
-        shipping_phone: off.customer?.phone || null,
+        shipping_phone: normalizePhoneTo62(off.customer?.phone || "") || null,
         transaction_date: off.created_at,
         sub_total: off.total,
         grand_total: off.total,
