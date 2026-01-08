@@ -2343,3 +2343,345 @@ body{
 .mini-ico{
   cursor: help;
 }
+/* ===== FIX VISIBILITY (WAJIB) ===== */
+.hidden { display: none !important; }
+
+/* ===== PIUTANG MODAL ===== */
+.modal{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.45);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.modal-box{
+  width: 520px;
+  max-width: 94vw;
+  background: #fff;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+.modal .row{ margin-top: 10px; }
+.modal .row label{ display:block; font-weight:700; margin-bottom:6px; }
+.modal .actions{ display:flex; gap:10px; justify-content:flex-end; margin-top:14px; }
+.error{ color:#c00; font-size:12px; margin-top:6px; }
+/* =====================================================
+   FIX: MODAL DRAFT & PICKING LIST
+   Problem: saat item sangat banyak, tombol Copy/Print/Tutup
+   hilang karena kartu modal melebihi tinggi layar.
+   Solusi:
+   - Overlay modal boleh scroll
+   - Card punya max-height sesuai viewport
+   - Header tombol dibuat sticky
+   - Konten list dibuat area scroll sendiri
+===================================================== */
+
+#draftModal,
+#gudangModal{
+  overflow:auto;           
+  align-items:flex-start !important;  /* override inline align-items:center */
+}
+
+#draftCard,
+#gudangCard{
+  max-height: calc(100vh - 36px);
+  display:flex;
+  flex-direction:column;
+}
+
+/* header bar (yang ada tombol) selalu kelihatan */
+#draftCard > div:first-child,
+#gudangCard > div:first-child{
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+/* area isi yang scroll */
+#draftContent,
+#gudangContent{
+  flex:1;
+  min-height:0;
+  overflow:auto;
+}
+
+
+/* =====================================================
+   PIUTANG MONITOR – COMPACT LIST (DESKTOP + MOBILE SAFE)
+   Target: padatkan info agar lebih banyak baris tampil
+===================================================== */
+
+.piutang-item{
+  background:#fff;
+  border:1px solid #eee;
+  border-radius:12px;
+  padding:10px 12px;
+  margin:8px 0;
+}
+
+.piutang-row{
+  display:grid;
+  grid-template-columns: 1.4fr 1.4fr 0.8fr auto;
+  gap:10px;
+  align-items:center;
+}
+
+
+.piutang-no{
+  font-weight:600;
+  font-size:12.5px;
+  letter-spacing:.2px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.piutang-dt{
+  font-size:11px;
+  color:#6b7280;
+  margin-top:3px;
+  white-space:nowrap;
+}
+
+
+.piutang-cust{
+  font-weight:600;
+  font-size:12px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.piutang-phone{
+  font-size:11px;
+  color:#6b7280;
+  margin-top:3px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+
+
+.piutang-amt{
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.piutang-amt{ 
+  justify-self:start;   /* kolom total mulai dari kiri area kolomnya */
+}
+
+.piutang-total{
+  font-weight:700;
+  font-size:13px;
+}
+
+.piutang-sisa{
+  font-size:11px;
+  color:#6b7280;
+  margin-top:3px;
+}
+
+
+.piutang-right{
+  display:flex;
+  flex-direction:row;      /* jadi 1 baris */
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+}
+
+
+.piutang-actions{
+  display:flex;
+  gap:6px;
+  flex-wrap:nowrap;
+}
+.piutang-actions{
+  align-items:center;
+}
+
+.piutang-actions .btn-outline,
+.piutang-actions .btn-primary-sm{
+  height:30px;
+  padding:0 10px;
+  border-radius:10px;
+  font-size:12px;
+  font-weight:700;
+  white-space:nowrap;
+}
+
+
+.piutang-actions .btn-outline[disabled]{
+  opacity:.6;
+  cursor:not-allowed;
+}
+
+/* Hover lembut biar enak dibaca */
+.piutang-item:hover{
+  box-shadow: 0 2px 10px rgba(0,0,0,.06);
+}
+/* ===== PIUTANG: seragamkan badge & tombol (beda warna saja) ===== */
+
+/* target: badge BELUM BAYAR dan 2 tombol */
+.piutang-right .badge,
+.piutang-actions .btn-primary-sm,
+.piutang-actions .btn-outline{
+  height:30px;
+  padding:0 12px;
+  border-radius:10px;
+  font-size:12px;
+  font-weight:700;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  white-space:nowrap;
+  line-height:1;
+}
+.piutang-right .badge.unpaid{
+  color:#ef4444;
+  border:1px solid rgba(239,68,68,.75);
+  background:rgba(239,68,68,.06);
+}
+.piutang-actions .btn-primary-sm{
+  border:1px solid rgba(245,158,11,.65);
+  background:rgba(245,158,11,.95);
+  color:#fff;
+}
+.piutang-actions .btn-outline{
+  border:1px solid #e5e7eb;
+  background:#fff;
+  color:#9ca3af;
+}
+.piutang-actions .btn-outline[disabled]{
+  opacity:.8;
+  cursor:not-allowed;
+}
+.piutang-right .badge,
+.piutang-actions .btn-primary-sm,
+.piutang-actions .btn-outline{
+  height:30px !important;
+  padding:0 12px !important;
+  border-radius:10px !important;
+}
+
+/* RESPONSIVE: Mobile tetap aman (stack) */
+@media (max-width: 900px){
+  .piutang-row{
+    grid-template-columns: 1fr;
+    gap:8px;
+    align-items:start;
+  }
+  .piutang-right{
+    flex-direction:column;
+    align-items:flex-start;
+  }
+
+  .piutang-amt{
+    text-align:left;
+  }
+
+  .piutang-right{
+    align-items:flex-start;
+  }
+
+  .piutang-actions{
+    width:100%;
+    flex-wrap:wrap;
+  }
+
+  .piutang-actions .btn-outline,
+  .piutang-actions .btn-primary-sm{
+    flex:1 1 0;
+  }
+}
+/* ===== PIUTANG HEADER (rapi & mobile safe) ===== */
+.piutang-toolbar{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.piutang-head{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0; /* penting biar ellipsis bisa jalan */
+}
+
+.piutang-title{
+  font-weight:800;
+  font-size:14px;
+}
+
+.piutang-meta{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size:12px;
+  color:#6b7280;
+  flex-wrap:wrap; /* mobile aman */
+}
+
+.piutang-totalinfo{
+  color:#111;
+  font-weight:700;
+}
+
+.piutang-sep{
+  color:#cbd5e1;
+}
+
+/* Kanan (filter) tetap nempel kanan */
+.piutang-toolbar .txn-filter{
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+
+/* Mobile: separator boleh disembunyikan biar lebih clean */
+@media (max-width: 520px){
+  .piutang-sep{ display:none; }
+  .piutang-meta{ gap:6px; }
+}
+/* ===============================
+   PIUTANG: default (tidak aktif)
+   =============================== */
+#tabPiutang{
+  background:#fff;
+  border:1px solid #e5e7eb;
+}
+
+/* teks Piutang merah terang */
+#tabPiutang > div:last-child{
+  color:#ef4444;
+  font-weight:800;
+}
+
+/* icon tetap normal */
+#tabPiutang .ico{
+  color:inherit;
+}
+
+/* ===============================
+   PIUTANG: SAAT AKTIF (KUNING)
+   samakan dengan menu lain
+   =============================== */
+#tabPiutang.active,
+#tabPiutang.selected{
+  background:#fef3c7 !important;   /* kuning */
+  border-color:#f59e0b !important;
+}
+
+/* saat aktif, teks ikut hitam (bukan merah) */
+#tabPiutang.active > div:last-child,
+#tabPiutang.selected > div:last-child{
+  color:#111 !important;
+  font-weight:700;
+}
