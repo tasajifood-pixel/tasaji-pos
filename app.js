@@ -918,8 +918,13 @@ let ONLINE_CHECKING = false;
 // ONLINE / OFFLINE DETECTOR
 // ==============================
 function isOnline(){
-  return ONLINE_OK === true;
+  // ✅ jangan gampang-gampang menganggap offline hanya karena ONLINE_OK belum terisi
+  const nav = (typeof navigator !== "undefined") ? !!navigator.onLine : true;
+  const ok  = (typeof ONLINE_OK !== "undefined") ? (ONLINE_OK !== false) : true; 
+  return nav && ok;
 }
+
+
 
 async function canReachSupabase(){
   if (!navigator.onLine) return false;
@@ -1126,123 +1131,482 @@ function normalizePhone(phone) {
   return Number(p);
 }
 /* =====================================================
-   HOLD / PARKED ORDERS (per komputer - localStorage)
+/* =====================================================
+   HOLD / PARKED ORDERS (HYBRID: online+offline)
+   - Offline: localStorage (per device)
+   - Online : Supabase table `pos_holds` (shared antar kasir)
+   Catatan:
+   - Saat "dibuka" (Resume), hold langsung dihapus dari list (consume).
 ===================================================== */
-// ===== HOLD TRANSACTION =====
-function getHoldKey(){
-  return "pos_holds_v1"; // per komputer (browser) saja
-}
+const HOLD_LOCAL_KEY = "pos_holds_v1";
+const HOLD_DELETE_QUEUE_KEY = "pos_holds_delete_queue_v1";
+
+// cache list gabungan (buat aksi rename/delete dengan source)
+let __HOLD_LIST_CACHE = [];
+
 
 function loadHolds(){
-  try{
-    return JSON.parse(localStorage.getItem(getHoldKey()) || "[]") || [];
-  }catch{
-    return [];
-  }
+  try{ return JSON.parse(localStorage.getItem(HOLD_LOCAL_KEY) || "[]") || []; }
+  catch{ return []; }
 }
-
 function saveHolds(list){
-  localStorage.setItem(getHoldKey(), JSON.stringify(list || []));
+  localStorage.setItem(HOLD_LOCAL_KEY, JSON.stringify(list || []));
 }
 
-function openHoldModal(){
-  refreshHoldList();
+async function openHoldModal(){
+  await refreshHoldList();
   const m = document.getElementById("holdModal");
   if(m) m.style.display = "flex";
 }
 
 function closeHoldModal(){
   const m = document.getElementById("holdModal");
-  if(m) m.style.display = "none";
+  if(!m) return;
+  m.style.display = "none";
 }
 
-function refreshHoldList(){
-  const list = loadHolds();
-  renderHoldList(list);
+/* =========================
+   ONLINE: Supabase pos_holds
+========================= */
+// struktur row yang diharapkan (ideal):
+// id(text pk), status(text), label(text), customer_name(text), customer_phone(text), customer_category(text),
+// total(numeric), item_count(int), payload(jsonb), cashier_id(text), cashier_name(text), created_at(timestamptz), updated_at(timestamptz)
+//
+// ✅ NOTE: Kode di bawah dibuat "tahan banting":
+// - Kalau kolom extra (label/customer_name/...) BELUM ADA di tabel, tetap jalan pakai payload (fallback).
+// - Kalau sudah ada kolom extra, otomatis dipakai supaya list lebih rapi & cepat.
+
+function buildHoldFromRow(r){
+  const payload = r?.payload || {};
+  const custFromPayload = payload.customer || null;
+  const cart = payload.cart || [];
+
+  // 1) ambil nama pelanggan seprioritas mungkin
+  const custName =
+    (r?.customer_name) ||
+    payload.customer_name ||
+    custFromPayload?.name ||
+    custFromPayload?.contact_name ||
+    "";
+
+  const custPhone =
+    (r?.customer_phone) ||
+    payload.customer_phone ||
+    custFromPayload?.phone ||
+    "";
+
+  const custCategory =
+    (r?.customer_category) ||
+    payload.customer_category ||
+    custFromPayload?.category ||
+    "";
+
+  // 2) label: nama pelanggan harus menang (yang user mau tampil)
+ const label =
+  (custName && String(custName).trim()) ||
+  (holdObj?.label && String(holdObj.label).trim()) ||
+  (payload?.label && String(payload.label).trim()) ||
+  (payload?.salesorder_no && String(payload.salesorder_no).trim()) ||
+  (holdObj?.id || "");
+
+
+  // 3) total & item_count
+  const total =
+    Number(r?.total ?? payload.total ?? 0);
+
+  const itemCount =
+    Number(
+      r?.item_count ??
+      payload.item_count ??
+      (Array.isArray(cart) ? cart.length : 0) ??
+      0
+    );
+
+  const createdAt =
+    r?.created_at || payload.created_at || null;
+
+  return {
+    id: r?.id,
+    label,
+    customer_name: custName || "",
+    customer_phone: custPhone || "",
+    customer_category: custCategory || "",
+    total,
+    item_count: itemCount,
+    created_at: createdAt,
+    payload,
+    source: "online",
+    cashier_id: r?.cashier_id || payload.cashier_id || "",
+    cashier_name: r?.cashier_name || payload.cashier_name || ""
+  };
 }
 
+async function fetchOnlineHolds(){
+  // ✅ coba SELECT lengkap dulu (kalau kolom sudah ada)
+  try{
+    const { data, error } = await sb
+      .from("pos_holds")
+      .select("id,status,label,customer_name,customer_phone,customer_category,total,item_count,payload,cashier_id,cashier_name,created_at,updated_at")
+      .eq("status", "OPEN")
+      .order("updated_at", { ascending:false })
+      .limit(200);
+
+    if(error) throw error;
+    return (data || []).map(buildHoldFromRow);
+  }catch(e){
+    // ✅ fallback: tabel minimal (id,status,payload,created_at,updated_at)
+    const { data, error } = await sb
+      .from("pos_holds")
+      .select("id,status,payload,created_at,updated_at")
+      .eq("status", "OPEN")
+      .order("updated_at", { ascending:false })
+      .limit(200);
+
+    if(error) throw error;
+    return (data || []).map(buildHoldFromRow);
+  }
+}
+
+async function upsertOnlineHold(holdObj){
+  const nowIso = new Date().toISOString();
+
+  const payload = holdObj?.payload || {};
+  const custFromPayload = payload.customer || null;
+
+  const custName =
+    holdObj?.customer_name ||
+    payload.customer_name ||
+    custFromPayload?.name ||
+    custFromPayload?.contact_name ||
+    "";
+
+  const custPhone =
+    holdObj?.customer_phone ||
+    payload.customer_phone ||
+    custFromPayload?.phone ||
+    "";
+
+  const custCategory =
+    holdObj?.customer_category ||
+    payload.customer_category ||
+    custFromPayload?.category ||
+    "";
+
+  const label =
+  (custName && String(custName).trim()) ||
+  (holdObj?.label && String(holdObj.label).trim()) ||
+  (payload?.label && String(payload.label).trim()) ||
+  (payload?.salesorder_no && String(payload.salesorder_no).trim()) ||
+  (holdObj?.id || "");
+
+
+  const createdAt = holdObj?.created_at || payload?.created_at || nowIso;
+
+  // ✅ row lengkap (kalau kolom extra sudah ada)
+  const rowFull = {
+    id: holdObj.id,
+    status: "OPEN",
+    label,
+    customer_name: custName || "",
+    customer_phone: custPhone || "",
+    customer_category: custCategory || "",
+    total: Number(holdObj?.total ?? payload?.total ?? 0),
+    item_count: Number(holdObj?.item_count ?? payload?.item_count ?? 0),
+    cashier_id: holdObj?.cashier_id || payload?.cashier_id || "",
+    cashier_name: holdObj?.cashier_name || payload?.cashier_name || "",
+    payload: payload,
+    updated_at: nowIso,
+    created_at: createdAt
+  };
+
+  // ✅ fallback kalau tabel minimal
+  const rowMinimal = {
+    id: holdObj.id,
+    status: "OPEN",
+    payload: payload,
+    updated_at: nowIso,
+    created_at: createdAt
+  };
+
+  try{
+    const { error } = await sb
+      .from("pos_holds")
+      .upsert(rowFull, { onConflict: "id" });
+    if(error) throw error;
+  }catch(e){
+    // kolom extra belum ada → pakai minimal
+    const { error } = await sb
+      .from("pos_holds")
+      .upsert(rowMinimal, { onConflict: "id" });
+    if(error) throw error;
+  }
+}
+
+async function closeOnlineHold(id){
+  const nowIso = new Date().toISOString();
+
+  // prefer soft-close (status=CLOSED). Kalau gagal (misal kolom status tidak ada), fallback delete.
+  const upd = await sb
+    .from("pos_holds")
+    .update({ status:"CLOSED", updated_at: nowIso })
+    .eq("id", id);
+
+  if(upd?.error){
+    const del = await sb.from("pos_holds").delete().eq("id", id);
+    if(del?.error) throw del.error;
+  }
+}
+
+/* =========================
+   OFFLINE QUEUE (delete)
+========================= */
+function loadHoldDeleteQueue(){
+  try{ return JSON.parse(localStorage.getItem(HOLD_DELETE_QUEUE_KEY) || "[]") || []; }
+  catch{ return []; }
+}
+function saveHoldDeleteQueue(list){
+  localStorage.setItem(HOLD_DELETE_QUEUE_KEY, JSON.stringify(list || []));
+}
+function queueHoldDeletion(id){
+  const q = loadHoldDeleteQueue();
+  if(!q.includes(id)){
+    q.push(id);
+    saveHoldDeleteQueue(q);
+  }
+}
+async function flushHoldDeleteQueue(){
+  if(!isOnline()) return;
+  const q = loadHoldDeleteQueue();
+  if(!q.length) return;
+
+  const remaining = [];
+  for(const id of q){
+    try{
+      await closeOnlineHold(id);
+    }catch(e){
+      remaining.push(id);
+    }
+  }
+  saveHoldDeleteQueue(remaining);
+}
+
+/* =========================
+   SYNC local holds → online
+========================= */
+async function syncLocalHoldsToOnline(){
+  if(!isOnline()) return;
+  const local = loadHolds();
+  if(!local.length) return;
+
+  for(const h of local){
+    try{
+      await upsertOnlineHold({ ...h });
+    }catch(e){
+      // biarkan, nanti sync lagi
+    }
+  }
+}
+
+/* =========================
+   UI LIST RENDER
+========================= */
 function renderHoldList(list){
   const box = document.getElementById("holdList");
   if(!box) return;
 
-  if(!list.length){
-    box.innerHTML = `<div style="padding:14px;color:#999;">Belum ada transaksi tersimpan.</div>`;
+  const holds = list || [];
+  if(!holds.length){
+    box.innerHTML = `<div style="padding:14px;color:#777;">Belum ada transaksi tersimpan.</div>`;
     return;
   }
 
-  box.innerHTML = list
-    .sort((a,b)=> (b.created_at||0) - (a.created_at||0))
-    .map(h => {
-      const cust = h.customer?.contact_name || h.customer?.contact_name || h.customer_name || "UMUM";
-      const label = h.label || cust || "Transaksi";
-      const total = Number(h.total || 0);
-      const itemsCount = Number(h.item_count || 0);
-      const by = h.cashier_name ? ` • Simpan: ${h.cashier_name}` : "";
-      const when = h.created_at ? new Date(h.created_at).toLocaleString("id-ID") : "-";
+  box.innerHTML = holds.map(h => {
+    const cust = [h.customer_name, h.customer_phone, h.customer_category].filter(Boolean).join(" • ");
+    const dt = h.created_at ? new Date(h.created_at).toLocaleString() : "";
 
-      return `
-        <div style="padding:12px 12px;border-bottom:1px solid #eee;display:flex;gap:10px;align-items:center;">
-          <div style="flex:1;min-width:0;">
-            <div style="font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-              ${label}
-            </div>
-            <div style="font-size:12px;color:#666;margin-top:4px;">
-              ${when}${by} • ${itemsCount} item • <b>${formatRupiah(total)}</b>
-            </div>
-          </div>
+    const srcBadge = (h.source === "online")
+      ? `<span style="font-size:11px;padding:2px 8px;border-radius:999px;background:#ecfeff;color:#155e75;border:1px solid #a5f3fc;">Online</span>`
+      : `<span style="font-size:11px;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;">Offline</span>`;
 
-          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
-            <button class="btn-primary" onclick="resumeHold('${h.id}')">Buka</button>
-            <button class="btn-outline" onclick="renameHold('${h.id}')">Rename</button>
-            <button class="btn-outline" style="border-color:#e53935;color:#e53935;" onclick="deleteHold('${h.id}')">Hapus</button>
-          </div>
-        </div>
-      `;
-    }).join("");
+    return `
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;padding:12px 12px;border-bottom:1px solid #eee;">
+      <div style="min-width:0;">
+        <div style="font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${h.label || h.id} ${srcBadge}</div>
+        ${cust ? `<div style="color:#666;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${cust}</div>` : ``}
+        <div style="color:#999;font-size:11px;margin-top:2px;">${dt} • ${Number(h.item_count||0)} item • Rp${Number(h.total||0).toLocaleString("id-ID")}</div>
+      </div>
+
+      <div class="hold-actions">
+  <button class="btn-small btn-continue"
+    onclick="resumeHold('${h.id}', '${h.source||"local"}')">
+    ▶ Lanjutkan
+  </button>
+
+  <button class="btn-small btn-rename"
+    onclick="renameHold('${h.id}', '${h.source||"local"}')">
+    ✏ Rename
+  </button>
+
+  <button class="btn-small btn-delete"
+    onclick="deleteHold('${h.id}', '${h.source||"local"}')">
+    🗑 Hapus
+  </button>
+</div>
+
+    </div>`;
+  }).join("");
 }
 
-function parkCurrentOrder(){
+/* =========================
+   REFRESH LIST (HYBRID)
+========================= */
+async function refreshHoldList(){
+  // 1) render local dulu biar responsif
+  const local = loadHolds().map(h => ({ ...h, source: (h.source || "local") }));
+
+  __HOLD_LIST_CACHE = [...local];
+  renderHoldList(__HOLD_LIST_CACHE);
+
+  // 2) kalau online → tarik online + merge
+  if(isOnline()){
+    try{
+      await flushHoldDeleteQueue();
+      await syncLocalHoldsToOnline();
+      const online = await fetchOnlineHolds();
+
+      // merge by id: ONLINE menang
+      const map = new Map();
+      for(const l of local) map.set(l.id, l);
+      for(const o of online) map.set(o.id, o);
+
+      const merged = Array.from(map.values()).sort((a,b)=>{
+        const ta = new Date(a.created_at || 0).getTime();
+        const tb = new Date(b.created_at || 0).getTime();
+        return tb - ta;
+      });
+
+      __HOLD_LIST_CACHE = merged;
+      renderHoldList(__HOLD_LIST_CACHE);
+    }catch(err){
+      console.warn("refreshHoldList: gagal ambil online holds", err);
+      // tetap tampil local
+    }
+  }
+}
+
+/* =========================
+   CREATE / RESUME / CONSUME
+========================= */
+async function parkCurrentOrder(){
   if(!cart || cart.length === 0){
-    alert("Belum ada transaksi untuk disimpan.");
+    alert("Keranjang masih kosong.");
     return;
   }
 
-  const defaultLabel =
-    (ACTIVE_CUSTOMER?.contact_name ? ACTIVE_CUSTOMER.contact_name : "Pelanggan Umum");
+  const cust = (typeof ACTIVE_CUSTOMER !== "undefined") ? (ACTIVE_CUSTOMER || null) : null;
+  const autoLabel = (cust?.name || cust?.contact_name || "Pelanggan Umum");
+  const label = autoLabel; // tidak pakai prompt
 
-  const label = prompt("Nama transaksi (opsional):", defaultLabel) || defaultLabel;
-
-  const holds = loadHolds();
+  const holdId = "HOLD-" + Date.now();
 
   const holdObj = {
-    id: "HOLD-" + Date.now(),
-    label,
-    created_at: Date.now(),
+    id: holdId,
 
-    cashier_id: CASHIER_ID || localStorage.getItem("pos_cashier_id") || null,
-    cashier_name: CASHIER_NAME || localStorage.getItem("pos_cashier_name") || null,
+    // ✅ label utama: nama pelanggan
+    label: label || holdId,
 
-    // simpan state
-    customer: ACTIVE_CUSTOMER || null,
-    cart: cart || [],
-    salesorder_no: CURRENT_SALESORDER_NO || null,
+    customer_id: cust?.id || null,
+    customer_name: cust?.name || cust?.contact_name || "",
+    customer_phone: cust?.phone || "",
+    customer_category: cust?.category || "",
+
+    payload: {
+      label: label || holdId, // ✅ supaya payload punya label konsisten
+      customer: cust || null,
+      customer_name: cust?.name || cust?.contact_name || "",
+      customer_phone: cust?.phone || "",
+      customer_category: cust?.category || "",
+      cart: cart || [],
+      salesorder_no: (typeof CURRENT_SALESORDER_NO !== "undefined") ? (CURRENT_SALESORDER_NO || null) : null,
+      total: calcTotal(),
+      item_count: calcItemCount(),
+      created_at: new Date().toISOString()
+    },
 
     total: calcTotal(),
-    item_count: calcItemCount()
+    item_count: calcItemCount(),
+    created_at: new Date().toISOString()
   };
 
+  // ✅ selalu simpan local dulu (aman walau internet putus)
+  const holds = loadHolds();
   holds.push(holdObj);
   saveHolds(holds);
 
-  // reset transaksi aktif supaya bisa lanjut transaksi berikutnya
-  resetAll();
+  // ✅ kalau online, upsert juga ke Supabase
+  try{
+    if(isOnline()){
+      await upsertOnlineHold({ ...holdObj, source:"online" });
 
-  alert("✅ Transaksi disimpan.\nBuka lewat tombol: 🗂 Tersimpan");
+      // tandai local source=online supaya UI konsisten
+      const holds2 = loadHolds();
+      const idx = holds2.findIndex(x => x.id === holdObj.id);
+      if(idx >= 0){
+        holds2[idx].source = "online";
+        saveHolds(holds2);
+      }
+    }
+  }catch(err){
+    console.warn("parkCurrentOrder: gagal sync online hold", err);
+  }
+
+  // ✅ setelah simpan, refresh list biar langsung keliatan
+  try{ refreshHoldList(); }catch(e){}
+
+  // ✅ kosongkan transaksi aktif agar bisa lanjut transaksi lain
+  try{
+    if (typeof resetAll === "function") resetAll();
+    else {
+      cart = [];
+      if(typeof ACTIVE_CUSTOMER !== "undefined") ACTIVE_CUSTOMER = null;
+      renderCart();
+      updateSummary();
+    }
+  }catch(e){}
+
+  // ✅ tutup modal (balik ke layar jual)
+  try{ closeHoldModal(); }catch(e){}
+} // ✅ penutup parkCurrentOrder()
+
+function removeHoldByIdLocal(id){
+  const next = loadHolds().filter(x => x.id !== id);
+  saveHolds(next);
 }
 
-function resumeHold(id){
-  const holds = loadHolds();
-  const h = holds.find(x => x.id === id);
+async function consumeHoldNow(id, source){
+  // hilangkan dari local list
+  removeHoldByIdLocal(id);
+
+  // kalau sumbernya online → close online (atau queue)
+  if(String(source).toLowerCase() === "online"){
+    if(isOnline()){
+      try{ await closeOnlineHold(id); }
+      catch(e){ queueHoldDeletion(id); }
+    }else{
+      queueHoldDeletion(id);
+    }
+  }
+}
+
+async function resumeHold(id, source){
+  // ambil data dari cache gabungan (online/offline)
+  const cached = (__HOLD_LIST_CACHE || []).find(x => x.id === id) || null;
+
+  // fallback: coba local
+  const local = loadHolds();
+  const hLocal = local.find(x => x.id === id) || null;
+
+  const h = cached || hLocal;
   if(!h){
     alert("Data transaksi tersimpan tidak ditemukan.");
     return;
@@ -1253,72 +1617,141 @@ function resumeHold(id){
     alert("Masih ada transaksi aktif. Simpan dulu atau Reset dulu sebelum membuka transaksi tersimpan.");
     return;
   }
-CURRENT_HOLD_ID = h.id; // ✅ tandai sedang buka hold ini
 
-  // restore
-  cart = Array.isArray(h.cart) ? h.cart : [];
-  ACTIVE_CUSTOMER = h.customer || null;
-  CURRENT_SALESORDER_NO = h.salesorder_no || null;
+  // ✅ konfirmasi dulu (jangan restore cart kalau user batal)
+  const ok = confirm("Lanjutkan transaksi ini? (Setelah dibuka, transaksi akan hilang dari daftar tersimpan)");
+  if(!ok) return;
 
-  // hitung ulang harga sesuai rules customer sekarang
-  recalcCartPrices();
+  try{
+    // ✅ begitu lanjutkan, langsung consume (hapus dari daftar)
+    await consumeHoldNow(id, source || h.source || "local");
 
-  renderCart();
-  saveOrderState();
-  updateOrderNumberUI();
+    const payload = h.payload || {};
+const restoredCart = payload.cart || [];
 
-  // set input customer
-  const input = document.getElementById("customerInput");
-  if (input){
-    if (ACTIVE_CUSTOMER){
-      input.value = ACTIVE_CUSTOMER.contact_name + " (" + (ACTIVE_CUSTOMER.category_display || "-") + ")";
-    } else {
-      input.value = "";
+// ✅ customer: pakai payload.customer kalau ada,
+// kalau kosong → bangun dari field yang tersimpan
+let restoredCustomer = payload.customer || null;
+
+if(!restoredCustomer){
+  const name =
+    payload.customer_name ||
+    h.customer_name ||
+    "";
+
+  const phone =
+    payload.customer_phone ||
+    h.customer_phone ||
+    "";
+
+  const category =
+    payload.customer_category ||
+    h.customer_category ||
+    "";
+
+  // kalau ada minimal nama/phone → jadikan object customer
+  if(String(name || "").trim() || String(phone || "").trim()){
+    restoredCustomer = {
+      id: h.customer_id || payload.customer_id || null,
+      name: String(name || "").trim(),
+      phone: String(phone || "").trim(),
+      category: String(category || "").trim()
+    };
+  }
+}
+
+
+    // restore state
+    if(typeof ACTIVE_CUSTOMER !== "undefined") ACTIVE_CUSTOMER = restoredCustomer;
+    cart = restoredCart;
+// ✅ paksa UI customer kebaca (fallback kalau sistem kamu pakai input)
+try{
+  if (typeof renderCustomer === "function") renderCustomer();
+  if (typeof renderCustomerBox === "function") renderCustomerBox();
+  if (typeof updateCustomerUI === "function") updateCustomerUI();
+
+  // fallback manual (kalau ada input customer)
+  const el =
+    document.querySelector("#customerInput") ||
+    document.querySelector("input[name='customer']") ||
+    document.querySelector("input[placeholder*='Customer']");
+
+  if(el && restoredCustomer?.name){
+    el.value = restoredCustomer.name;
+    el.dispatchEvent(new Event("input", { bubbles:true }));
+    el.dispatchEvent(new Event("change", { bubbles:true }));
+  }
+}catch(e){}
+
+    // re-render UI
+    renderCart();
+    updateSummary();
+
+    // arahkan ke step penjualan (bungkus aman)
+    try{
+      switchLeftTab("sales");
+      if (typeof panelPayment !== "undefined" && panelPayment) panelPayment.style.display = "none";
+      if (typeof panelProduct !== "undefined" && panelProduct) panelProduct.style.display = "flex";
+      if (typeof btnNext !== "undefined" && btnNext) btnNext.style.display = "block";
+    }catch(e){
+      console.warn("resumeHold: gagal switch tab", e);
+    }
+
+    // refresh cache list biar gak “muncul lagi”
+    try{ await refreshHoldList(); }catch(e){}
+  }catch(e){
+    console.warn("resumeHold: gagal", e);
+  }finally{
+    // ✅ apapun yang terjadi modal harus tertutup
+    try{ closeHoldModal(); }catch(e){}
+  }
+}
+
+async function deleteHold(id, source){
+  if(!confirm("Hapus transaksi tersimpan ini?")) return;
+
+  try{
+    await consumeHoldNow(id, source || "local");
+  }catch(e){
+    // minimal local sudah kita coba hapus
+    removeHoldByIdLocal(id);
+  }
+  refreshHoldList();
+}
+
+async function renameHold(id, source){
+  const h = (__HOLD_LIST_CACHE || []).find(x => x.id === id) || loadHolds().find(x => x.id === id);
+  if(!h){
+    alert("Data transaksi tersimpan tidak ditemukan.");
+    return;
+  }
+
+  const newName = prompt("Ganti nama transaksi:", h.label || "") || "";
+  if(!newName.trim()) return;
+
+  // update local jika ada
+  const local = loadHolds();
+  const idx = local.findIndex(x => x.id === id);
+  if(idx >= 0){
+    local[idx].label = newName.trim();
+    // ✅ selaraskan juga payload.label biar konsisten
+    local[idx].payload = local[idx].payload || {};
+    local[idx].payload.label = newName.trim();
+    saveHolds(local);
+  }
+
+  // update online jika online hold
+  if(String(source).toLowerCase() === "online" && isOnline()){
+    try{
+      await upsertOnlineHold({ ...h, label: newName.trim() });
+    }catch(err){
+      console.warn("renameHold: gagal update online hold", err);
     }
   }
 
-  // balik ke penjualan
-  switchLeftTab("sales");
-  panelPayment.style.display = "none";
-  panelProduct.style.display = "flex";
-  btnNext.style.display = "block";
-closeHoldModal();
-}
-
-function deleteHold(id){
-  if(!confirm("Hapus transaksi tersimpan ini?")) return;
-  const holds = loadHolds().filter(x => x.id !== id);
-  saveHolds(holds);
   refreshHoldList();
 }
 
-function renameHold(id){
-  const holds = loadHolds();
-  const h = holds.find(x => x.id === id);
-  if(!h) return;
-
-  const next = prompt("Nama baru:", h.label || "") || h.label;
-  h.label = next;
-  saveHolds(holds);
-  refreshHoldList();
-}
-function removeCurrentHoldIfAny(){
-  if(!CURRENT_HOLD_ID) return;
-
-  const holds = loadHolds().filter(x => x.id !== CURRENT_HOLD_ID);
-  saveHolds(holds);
-
-  CURRENT_HOLD_ID = null; // reset setelah dihapus
-}
-
-// klik backdrop untuk tutup
-document.addEventListener("click", (e) => {
-  const m = document.getElementById("holdModal");
-  if(!m) return;
-  if(m.style.display === "flex" && e.target === m) closeHoldModal();
-});
-
-// ==============================
 // CARI PRODUK BERDASARKAN BARCODE (SCAN)
 // ==============================
 function normalizeBarcode(raw){
@@ -4002,31 +4435,51 @@ try {
 }
 
 // (B) POST-SAVE: PRINT / CLEANUP / RESET
+// (B) POST-SAVE: PRINT / CLEANUP / RESET
 try {
   // hapus dari transaksi tersimpan (jika ada)
-  removeCurrentHoldIfAny();
+  try { removeCurrentHoldIfAny(); } catch (e) {
+    console.warn("removeCurrentHoldIfAny gagal:", e);
+  }
 
   // khusus PIUTANG: paksa tetap print (biar struk muncul walau ada mode WA/setting lain)
   const forcePrintPiutang = (PAYMENT_LINES || []).some(x => x.method === "piutang");
 
-  // cetak struk (print otomatis ada di dalamnya)
-  generateReceiptData(
-    order.salesorder_no,
-    cart,
-    PAYMENT_LINES,
-    order,
-    { fromPayment: true, forcePrint: forcePrintPiutang }
-  );
+  // cetak struk (BEST EFFORT)
+  let printOk = false;
+  try {
+    generateReceiptData(
+      order?.salesorder_no || "-",
+      cart,
+      PAYMENT_LINES,
+      order,
+      { fromPayment: true, forcePrint: forcePrintPiutang }
+    );
+    printOk = true;
+  } catch (printErr) {
+    console.error("⚠️ PRINT error:", printErr);
+  }
 
   // reset transaksi SETELAH print dipanggil
-  resetAll();
+  try { resetAll(); } catch (e) {
+    console.warn("resetAll gagal:", e);
+  }
+
+  // kalau print gagal → info saja (transaksi tetap sukses)
+  if(!printOk){
+    alert(
+      "Transaksi sudah tersimpan: " + (order?.salesorder_no || "-") + "\n" +
+      "Namun struk belum berhasil diprint.\n" +
+      "Silakan buka menu Transaksi untuk reprint."
+    );
+  }
 
 } catch (postErr) {
-  console.error("⚠️ POST-SAVE error (print/cleanup):", postErr);
+  console.error("⚠️ POST-SAVE error (cleanup/reset):", postErr);
 
   alert(
     "Transaksi sudah tersimpan: " + (order?.salesorder_no || "-") + "\n" +
-    "Namun terjadi kendala saat menampilkan/print struk.\n" +
+    "Namun terjadi kendala setelah penyimpanan.\n" +
     "Silakan buka menu Transaksi untuk reprint."
   );
 
@@ -4377,6 +4830,39 @@ window.addEventListener("afterprint", () => {
   const m = document.getElementById("receiptModal");
   if (m) m.style.display = "none";
 });
+
+function printHtmlByIframe(html){
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  iframe.style.opacity = "0";
+  iframe.setAttribute("aria-hidden", "true");
+
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentWindow.document;
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  // tunggu benar-benar siap
+  iframe.onload = () => {
+    try{
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    }catch(e){
+      console.warn("printHtmlByIframe gagal:", e);
+    }finally{
+      setTimeout(()=> iframe.remove(), 1200);
+    }
+  };
+}
+
+
 function txnSetToday(){
   const fromEl = document.getElementById("txnDateFrom");
   const toEl   = document.getElementById("txnDateTo");
@@ -5503,7 +5989,7 @@ await loadCustomers();
 if (isOnline()) {
   await syncAllProductsToCacheIfNeeded();
 }
-window.addEventListener("online",  ()=> refreshOnlineStatus());
+window.addEventListener("online",  ()=> { refreshOnlineStatus(); try{ flushHoldDeleteQueue(); syncLocalHoldsToOnline(); }catch(e){} });
 window.addEventListener("offline", ()=> { ONLINE_OK = false; refreshOnlineStatus(); });
 
 // optional tapi bagus:
@@ -6797,13 +7283,14 @@ function remindPiutangWAByIdx(i) {
     const cust = r.customer_name || r.customer || "Pelanggan";
     const sisa = Number(r.outstanding_amount || 0);
 
-    const msg =
-`Assalamu'alaikum Kak ${cust}.
+const msg = `Assalamu'alaikum Kak ${cust}.
 Kami dari Tasaji.
 
 Menginfokan untuk transaksi *${orderNo}* masih ada sisa tagihan sebesar *${formatRupiahPlain(sisa)}*.
 
 Mohon dibantu pelunasannya ya Kak. Terima kasih.`;
+
+
 
     const url = `https://wa.me/${phone62}?text=${encodeURIComponent(msg)}`;
     window.open(url, "_blank", "noopener,noreferrer");
@@ -7015,8 +7502,7 @@ async function submitPiutangPayment(){
 
     const paidTotal = (payRows || []).reduce((s, r) => s + Number(r.amount || 0), 0);
     const isLunas = paidTotal >= grandTotal - 0.0001;
-
-    // Update header order
+	
  // Update header order
 if (isLunas){
   const { error: upErr } = await sb
