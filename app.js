@@ -3995,7 +3995,14 @@ function normalizePaymentsForReceipt(payments){
     const label = p.label || p.payment_method || "-";
     const amount = Number(p.amount || 0);
     const low = String(label).toLowerCase();
-    const method = p.method || (low.includes("kas") || low.includes("cash") ? "cash" : "noncash");
+    const method = p.method || (
+  low.includes("kas") ||
+  low.includes("cash") ||
+  low.includes("tunai")
+    ? "cash"
+    : "noncash"
+);
+
     return { label, amount, method };
   });
 }
@@ -4059,9 +4066,20 @@ if (isWaMode && !forcePrint) {
   `).join("");
 
   const total = Number(header?.grand_total ?? 0) || (items || []).reduce((s,i)=>s+Number(i.price||0)*Number(i.qty||i.qty_in_base||0),0);
-  const paid = payNorm.reduce((s,p)=>s+p.amount,0);
-  const hasCash = payNorm.some(p => p.method === "cash");
-  const change = (hasCash && paid > total) ? (paid - total) : 0;
+  const paid = payNorm.reduce((s,p)=>s + p.amount, 0);
+
+const cashPaid = payNorm
+  .filter(p => p.method === "cash")
+  .reduce((s,p)=>s + p.amount, 0);
+
+const nonCashPaid = payNorm
+  .filter(p => p.method !== "cash")
+  .reduce((s,p)=>s + p.amount, 0);
+
+// kembalian = uang tunai - sisa yang harus dibayar setelah non-cash
+const remainingAfterNonCash = Math.max(0, total - nonCashPaid);
+const change = Math.max(0, cashPaid - remainingAfterNonCash);
+
 
   const tanggal = header?.transaction_date ? formatDateID(header.transaction_date) : new Date().toLocaleString("id-ID");
 
