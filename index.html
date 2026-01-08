@@ -11,6 +11,8 @@
 ===================================================== -->
 
 <link rel="stylesheet" href="./style.css ">
+<link rel="manifest" href="./manifest.webmanifest">
+
 </head>
 
 <body>
@@ -852,6 +854,39 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="app.js"></script>
+<script>
+  (function () {
+    if (!("serviceWorker" in navigator)) return;
+
+    window.__POS_SW_UPDATED = false;
+
+    navigator.serviceWorker.register("./sw.js").then((reg) => {
+      reg.addEventListener("updatefound", () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+
+        newWorker.addEventListener("statechange", () => {
+          if (newWorker.state === "installed") {
+            // update (bukan first install)
+            if (navigator.serviceWorker.controller) {
+              window.__POS_SW_UPDATED = true;
+
+              // ✅ aman: tanya dulu, jangan auto reload saat kasir transaksi
+              const ok = confirm("Ada versi baru Tasaji POS. Muat ulang sekarang?");
+              if (ok) newWorker.postMessage({ type: "SKIP_WAITING" });
+            }
+          }
+        });
+      });
+
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (window.__POS_SW_UPDATED) location.reload();
+      });
+    }).catch((err) => {
+      console.warn("SW register failed:", err);
+    });
+  })();
+</script>
 
 </body>
 </html>
