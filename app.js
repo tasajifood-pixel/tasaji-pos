@@ -1246,10 +1246,8 @@ async function fetchOnlineHolds(){
   try{
     const { data, error } = await sb
       .from("pos_holds")
-      .select("id,status,store_id,label,customer_name,customer_phone,customer_category,total,item_count,payload,cashier_id,cashier_name,created_by,created_at,updated_at")
+      .select("id,status,label,customer_name,customer_phone,customer_category,total,item_count,payload,cashier_id,cashier_name,created_at,updated_at")
       .eq("status", "OPEN")
-.eq("store_id", (typeof CURRENT_STORE_ID !== "undefined" ? (CURRENT_STORE_ID || "") : ""))
-
       .order("updated_at", { ascending:false })
       .limit(200);
 
@@ -1400,12 +1398,7 @@ async function syncLocalHoldsToOnline(){
   const local = loadHolds();
   if(!local.length) return;
 
-  // ✅ hanya dorong hold yang memang "lokal" (belum jadi online),
-  // supaya hold yang sudah dihapus/ditutup di kasir lain tidak "hidup lagi".
-  const toSync = local.filter(h => (h && (h.source || "local") !== "online"));
-  if(!toSync.length) return;
-
-  for(const h of toSync){
+  for(const h of local){
     try{
       await upsertOnlineHold({ ...h });
     }catch(e){
@@ -1413,7 +1406,6 @@ async function syncLocalHoldsToOnline(){
     }
   }
 }
-
 /* =========================
    HOLD LIST FILTER (CLEAN)
    - Skip data sampah (***)
@@ -1520,55 +1512,29 @@ async function refreshHoldList(){
 
   // 2) kalau online → tarik online + merge
   if(isOnline()){
-  try{
-    // (A) flush dulu antrian delete (kalau sebelumnya offline)
-    await flushHoldDeleteQueue();
+    try{
+      await flushHoldDeleteQueue();
+      await syncLocalHoldsToOnline();
+      const online = await fetchOnlineHolds();
 
-    // (B) fetch online dulu (source of truth)
-    let online = await fetchOnlineHolds();
+      // merge by id: ONLINE menang
+      const map = new Map();
+      for(const l of local) map.set(l.id, l);
+      for(const o of online) map.set(o.id, o);
 
-    // (C) bersihkan local yang sebenarnya sudah ditutup/dihapus dari kasir lain
-    //     (khusus yang local.source === "online" tapi sudah tidak ada di online OPEN)
-    const onlineIdSet = new Set((online || []).map(x => x.id));
-    const cleanedLocal = local.filter(h => {
-      const src = (h.source || "local");
-      if(src === "online" && h.id && !onlineIdSet.has(h.id)) return false;
-      return true;
-    });
+      const merged = Array.from(map.values()).sort((a,b)=>{
+        const ta = new Date(a.created_at || 0).getTime();
+        const tb = new Date(b.created_at || 0).getTime();
+        return tb - ta;
+      });
 
-    if(cleanedLocal.length !== local.length){
-      // update localStorage agar tidak bisa "menghidupkan lagi"
-      saveHolds(cleanedLocal.map(h => ({ ...h })));
-      local = cleanedLocal;
-    }else{
-      local = cleanedLocal;
+      __HOLD_LIST_CACHE = merged;
+      renderHoldList(__HOLD_LIST_CACHE);
+    }catch(err){
+      console.warn("refreshHoldList: gagal ambil online holds", err);
+      // tetap tampil local
     }
-
-    // (D) baru sync hold lokal (yang belum online)
-    await syncLocalHoldsToOnline();
-
-    // (E) fetch online lagi supaya hasil list sudah include yang baru tersync
-    online = await fetchOnlineHolds();
-
-    // merge by id: ONLINE menang
-    const map = new Map();
-    for(const l of local) map.set(l.id, l);
-    for(const o of online) map.set(o.id, o);
-
-    const merged = Array.from(map.values()).sort((a,b)=>{
-      const ta = new Date(a.created_at || 0).getTime();
-      const tb = new Date(b.created_at || 0).getTime();
-      return tb - ta;
-    });
-
-    __HOLD_LIST_CACHE = merged;
-    renderHoldList(__HOLD_LIST_CACHE);
-  }catch(err){
-    console.warn("refreshHoldList: gagal ambil online holds", err);
-    // tetap tampil local
   }
-}
-
 }
 
 /* =========================
@@ -1624,7 +1590,6 @@ async function parkCurrentOrder(){
   try{
     if(isOnline()){
       await upsertOnlineHold({ ...holdObj, source:"online" });
-console.log("[HOLD] upsert online OK:", holdObj.id);
 
       // tandai local source=online supaya UI konsisten
       const holds2 = loadHolds();
