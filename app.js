@@ -1584,6 +1584,7 @@ async function parkCurrentOrder(){
     customer_name: cust?.name || cust?.contact_name || "",
     customer_phone: cust?.phone || "",
     customer_category: cust?.category || "",
+	customer_category_id: (cust?.category_id != null ? Number(cust.category_id) : null),
 
     payload: {
       label: label || holdId,
@@ -1593,6 +1594,7 @@ async function parkCurrentOrder(){
       customer_category: cust?.category || "",
       cart: cart || [],
       salesorder_no: (typeof CURRENT_SALESORDER_NO !== "undefined") ? (CURRENT_SALESORDER_NO || null) : null,
+	  customer_category_id: (cust?.category_id != null ? Number(cust.category_id) : null),
       total: calcTotal(),
       item_count: calcItemCount(),
       created_at: new Date().toISOString()
@@ -1730,13 +1732,32 @@ if(restoredCustomer){
   const cPhone62 = normalizePhoneTo62(cPhoneRaw) || cPhoneRaw;
   const cCat = (restoredCustomer.category_display || restoredCustomer.category || restoredCustomer.customer_category || "").trim();
 
-  uiCust = {
-    contact_id: restoredCustomer.contact_id || restoredCustomer.id || restoredCustomer.customer_id || null,
-    contact_name: cName,
-    phone: cPhone62,
-    category_display: cCat || "-",
-    category: cCat || ""
-  };
+// coba ambil category_id dari payload dulu
+const cCatIdRaw =
+  restoredCustomer.category_id ??
+  restoredCustomer.customer_category_id ??
+  payload.customer_category_id ??
+  h.customer_category_id ??
+  null;
+
+// fallback: kalau ada CUSTOMER_LIST, cari by contact_id untuk dapat category_id yang valid
+let resolvedCatId = (cCatIdRaw != null ? Number(cCatIdRaw) : null);
+if ((resolvedCatId == null || Number.isNaN(resolvedCatId)) && Array.isArray(CUSTOMER_LIST)) {
+  const found = CUSTOMER_LIST.find(x =>
+    String(x.contact_id) === String(restoredCustomer.contact_id || restoredCustomer.id || restoredCustomer.customer_id || "")
+  );
+  if (found?.category_id != null) resolvedCatId = Number(found.category_id);
+}
+
+uiCust = {
+  contact_id: restoredCustomer.contact_id || restoredCustomer.id || restoredCustomer.customer_id || null,
+  contact_name: cName,
+  phone: cPhone62,
+  category_display: cCat || "-",
+  category: cCat || "",
+  category_id: (resolvedCatId != null && !Number.isNaN(resolvedCatId)) ? resolvedCatId : -1
+};
+
 }
 
 if(typeof ACTIVE_CUSTOMER !== "undefined") ACTIVE_CUSTOMER = uiCust;
