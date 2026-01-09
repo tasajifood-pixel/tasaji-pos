@@ -1246,8 +1246,10 @@ async function fetchOnlineHolds(){
   try{
     const { data, error } = await sb
       .from("pos_holds")
-      .select("id,status,label,customer_name,customer_phone,customer_category,total,item_count,payload,cashier_id,cashier_name,created_at,updated_at")
+      .select("id,status,store_id,label,customer_name,customer_phone,customer_category,total,item_count,payload,cashier_id,cashier_name,created_by,created_at,updated_at")
       .eq("status", "OPEN")
+.eq("store_id", (typeof CURRENT_STORE_ID !== "undefined" ? (CURRENT_STORE_ID || "") : ""))
+
       .order("updated_at", { ascending:false })
       .limit(200);
 
@@ -1622,6 +1624,7 @@ async function parkCurrentOrder(){
   try{
     if(isOnline()){
       await upsertOnlineHold({ ...holdObj, source:"online" });
+console.log("[HOLD] upsert online OK:", holdObj.id);
 
       // tandai local source=online supaya UI konsisten
       const holds2 = loadHolds();
