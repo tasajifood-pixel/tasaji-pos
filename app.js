@@ -1144,11 +1144,25 @@ const HOLD_DELETE_QUEUE_KEY = "pos_holds_delete_queue_v1";
 // cache list gabungan (buat aksi rename/delete dengan source)
 let __HOLD_LIST_CACHE = [];
 
-
 function loadHolds(){
-  try{ return JSON.parse(localStorage.getItem(HOLD_LOCAL_KEY) || "[]") || []; }
-  catch{ return []; }
+  try{
+    const arr = JSON.parse(localStorage.getItem(HOLD_LOCAL_KEY) || "[]") || [];
+
+    // localStorage hanya untuk HOLD OFFLINE (pending sync).
+    // hold yang sudah "online" tidak boleh jadi shadow copy.
+    const filtered = (arr || []).filter(h => String(h?.source || "local").toLowerCase() !== "online");
+
+    // auto-cleanup data lama (shadow online) dari localStorage
+    if(filtered.length !== (arr || []).length){
+      try{ localStorage.setItem(HOLD_LOCAL_KEY, JSON.stringify(filtered)); }catch(e){}
+    }
+
+    return filtered;
+  }catch{
+    return [];
+  }
 }
+
 function saveHolds(list){
   localStorage.setItem(HOLD_LOCAL_KEY, JSON.stringify(list || []));
 }
@@ -1395,17 +1409,27 @@ async function flushHoldDeleteQueue(){
 ========================= */
 async function syncLocalHoldsToOnline(){
   if(!isOnline()) return;
-  const local = loadHolds();
+
+  const local = loadHolds(); // local hanya offline pending
   if(!local.length) return;
+
+  const syncedIds = [];
 
   for(const h of local){
     try{
-      await upsertOnlineHold({ ...h });
+      await upsertOnlineHold({ ...h, source:"online" });
+      syncedIds.push(h.id);
     }catch(e){
       // biarkan, nanti sync lagi
     }
   }
+
+  if(syncedIds.length){
+    const remaining = local.filter(h => !syncedIds.includes(h.id));
+    saveHolds(remaining);
+  }
 }
+
 /* =========================
    HOLD LIST FILTER (CLEAN)
    - Skip data sampah (***)
@@ -1548,14 +1572,12 @@ async function parkCurrentOrder(){
 
   const cust = (typeof ACTIVE_CUSTOMER !== "undefined") ? (ACTIVE_CUSTOMER || null) : null;
   const autoLabel = (cust?.name || cust?.contact_name || "Pelanggan Umum");
-  const label = autoLabel; // tidak pakai prompt
+  const label = autoLabel;
 
   const holdId = "HOLD-" + Date.now();
 
   const holdObj = {
     id: holdId,
-
-    // ✅ label utama: nama pelanggan
     label: label || holdId,
 
     customer_id: cust?.id || null,
@@ -1564,7 +1586,7 @@ async function parkCurrentOrder(){
     customer_category: cust?.category || "",
 
     payload: {
-      label: label || holdId, // ✅ supaya payload punya label konsisten
+      label: label || holdId,
       customer: cust || null,
       customer_name: cust?.name || cust?.contact_name || "",
       customer_phone: cust?.phone || "",
@@ -1581,32 +1603,27 @@ async function parkCurrentOrder(){
     created_at: new Date().toISOString()
   };
 
-  // ✅ selalu simpan local dulu (aman walau internet putus)
-  const holds = loadHolds();
-  holds.push(holdObj);
-  saveHolds(holds);
+  // ONLINE = simpan ke Supabase saja (shared antar kasir)
+  // OFFLINE = simpan local (pending sync)
+  let savedOnline = false;
 
-  // ✅ kalau online, upsert juga ke Supabase
-  try{
-    if(isOnline()){
+  if(isOnline()){
+    try{
       await upsertOnlineHold({ ...holdObj, source:"online" });
-
-      // tandai local source=online supaya UI konsisten
-      const holds2 = loadHolds();
-      const idx = holds2.findIndex(x => x.id === holdObj.id);
-      if(idx >= 0){
-        holds2[idx].source = "online";
-        saveHolds(holds2);
-      }
+      savedOnline = true;
+    }catch(err){
+      console.warn("parkCurrentOrder: gagal simpan online hold, fallback ke offline", err);
     }
-  }catch(err){
-    console.warn("parkCurrentOrder: gagal sync online hold", err);
   }
 
-  // ✅ setelah simpan, refresh list biar langsung keliatan
+  if(!savedOnline){
+    const holds = loadHolds();
+    holds.push({ ...holdObj, source:"local" });
+    saveHolds(holds);
+  }
+
   try{ refreshHoldList(); }catch(e){}
 
-  // ✅ kosongkan transaksi aktif agar bisa lanjut transaksi lain
   try{
     if (typeof resetAll === "function") resetAll();
     else {
@@ -1617,9 +1634,9 @@ async function parkCurrentOrder(){
     }
   }catch(e){}
 
-  // ✅ tutup modal (balik ke layar jual)
   try{ closeHoldModal(); }catch(e){}
-} // ✅ penutup parkCurrentOrder()
+}
+
 
 function removeHoldByIdLocal(id){
   const next = loadHolds().filter(x => x.id !== id);
