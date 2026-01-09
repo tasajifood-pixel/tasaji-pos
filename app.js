@@ -7636,3 +7636,117 @@ window.openPiutangModalByIdx = function(idx){
   if (!order) return alert("Data piutang tidak ditemukan.");
   openPiutangModal(order);
 };
+
+/* =========================
+   ADMIN: CLEANUP CANCELED ORDERS
+========================= */
+function openCleanupCanceledModal(){
+  const m = document.getElementById("cleanupCanceledModal");
+  const box = document.getElementById("cleanupResultBox");
+  if(box){
+    box.style.display = "none";
+    box.textContent = "";
+  }
+  if(m){
+    m.classList.remove("hidden");
+  }
+}
+
+function closeCleanupCanceledModal(){
+  const m = document.getElementById("cleanupCanceledModal");
+  if(m){
+    m.classList.add("hidden");
+  }
+}
+
+function normalizeOrderNoText(s){
+  let x = String(s || "").trim();
+
+  // ganti berbagai jenis dash unicode → hyphen biasa
+  x = x.replace(/[‐-‒–—―]/g, "-");
+
+  // hapus zero-width + bidi marks (LRM/RLM/LRE/RLE/PDF/LRO/RLO/FSI/LRI/RLI/PDI)
+  x = x.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "");
+
+  // uppercase
+  x = x.toUpperCase();
+
+  // 🔥 terakhir: buang semua karakter selain A-Z 0-9 dan "-"
+  x = x.replace(/[^A-Z0-9\-]/g, "");
+
+  return x;
+}
+
+
+function parseOrderNosFromTextarea(raw){
+  const s = String(raw || "");
+  const parts = s.split(/\n|,/g).map(x => normalizeOrderNoText(x)).filter(Boolean);
+
+  const seen = new Set();
+  const out = [];
+  for(const p of parts){
+    if(!seen.has(p)){
+      seen.add(p);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+
+async function runCleanupCanceledOrders(){
+  try{
+    const pin = (document.getElementById("cleanupPinInput")?.value || "").trim();
+    const raw = (document.getElementById("cleanupOrdersTextarea")?.value || "");
+    const orderNos = parseOrderNosFromTextarea(raw);
+
+    if(!pin) return alert("PIN Admin wajib diisi.");
+    if(!orderNos.length) return alert("Daftar no pesanan masih kosong.");
+
+    const box = document.getElementById("cleanupResultBox");
+    if(box){
+      box.style.display = "block";
+      box.textContent = "Memproses...\nTotal: " + orderNos.length;
+    }
+
+if(typeof sb === "undefined" || !sb?.rpc){
+  throw new Error("Supabase client belum siap (variabel `sb` tidak ditemukan).");
+}
+
+const { data, error } = await sb.rpc("pos_cleanup_canceled_orders", {
+  p_salesorder_nos: orderNos,
+  p_pin: pin
+});
+
+
+    if(error) throw error;
+
+    let ok = 0, skip = 0;
+    const lines = (data || []).map(r => {
+      const st = r.status || "-";
+      if(st === "DELETED") ok++;
+      else skip++;
+      return `${r.salesorder_no} | ${st} | ${r.note || ""}`;
+    });
+
+    if(box){
+      box.textContent =
+        "Selesai.\n" +
+        "DELETED: " + ok + "\n" +
+        "SKIP: " + skip + "\n\n" +
+        lines.join("\n");
+    }
+
+  }catch(e){
+    console.error("runCleanupCanceledOrders error:", e);
+    const msg = (e?.message || String(e));
+
+    const box = document.getElementById("cleanupResultBox");
+    if(box){
+      box.style.display = "block";
+      box.textContent = "ERROR: " + msg;
+    }else{
+      alert("ERROR: " + msg);
+    }
+  }
+}
