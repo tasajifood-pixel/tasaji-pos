@@ -469,6 +469,8 @@
           <label>Auto Sync (jam)</label>
           <input type="number" id="setAutoSyncHours" min="1">
         </div>
+	
+
         <div class="small-note">
           Otomatis sync jika cache lebih lama dari jam ini.
         </div>
@@ -478,6 +480,17 @@
 
         <div id="syncStatus" class="sync-status"></div>
       </div>
+	  <div class="set-card">
+  <h3>Admin</h3>
+  <div class="small-note">
+    Khusus admin. Perlu PIN.
+  </div>
+  <button class="btn-admin-cleanup" type="button" onclick="openCleanupCanceledModal()">
+  <span class="ico">🧹</span>
+  <span>Bersihkan Pesanan Dibatalkan</span>
+</button>
+
+</div>
     </div>
   </div>
 </section>
@@ -835,6 +848,52 @@
     <div class="actions">
       <button onclick="closePiutangModal()">Batal</button>
       <button onclick="submitPiutangPayment()">Simpan</button>
+    </div>
+  </div>
+</div>
+<!-- =========================
+     MODAL: CLEANUP CANCELED ORDERS (ADMIN)
+========================= -->
+<div id="cleanupCanceledModal" class="modal hidden">
+  <div class="modal-content" style="max-width:560px;">
+    <div class="modal-header">
+      <div class="modal-title">🧹 Bersihkan Pesanan Dibatalkan</div>
+      <button class="modal-close" type="button" onclick="closeCleanupCanceledModal()">✖</button>
+    </div>
+
+    <div class="modal-body">
+      <div style="margin-top:6px;">
+        <label style="display:block; font-weight:600; margin-bottom:6px;">PIN Admin</label>
+        <input id="cleanupPinInput" type="password" placeholder="Masukkan PIN"
+               style="width:100%; padding:10px; border:1px solid #ddd; border-radius:10px;">
+      </div>
+
+      <div style="margin-top:12px;">
+        <label style="display:block; font-weight:600; margin-bottom:6px;">
+          Daftar No Pesanan (1 baris 1 nomor, boleh koma)
+        </label>
+        <textarea id="cleanupOrdersTextarea" rows="8"
+                  placeholder="TSJP-20260109-0759-0034
+TSJP-20260109-0759-0035
+TSJP-20260109-0759-0037"
+                  style="width:100%; padding:10px; border:1px solid #ddd; border-radius:10px;"></textarea>
+
+        <div style="font-size:12px; color:#6b7280; margin-top:6px;">
+          Hanya akan menghapus order yang ada di <b>pos_canceled_orders</b>.
+        </div>
+      </div>
+
+      <div class="cleanup-actions">
+        <button class="btn-danger" type="button" onclick="runCleanupCanceledOrders()" style="flex:1;">
+          Bersihkan
+        </button>
+        <button class="btn" type="button" onclick="closeCleanupCanceledModal()" style="flex:1;">
+          Tutup
+        </button>
+      </div>
+
+      <pre id="cleanupResultBox"
+           style="margin-top:12px; background:#111; color:#fff; padding:10px; border-radius:10px; white-space:pre-wrap; display:none;"></pre>
     </div>
   </div>
 </div>
