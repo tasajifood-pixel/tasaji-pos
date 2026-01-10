@@ -485,6 +485,11 @@
   <div class="small-note">
     Khusus admin. Perlu PIN.
   </div>
+<button class="btn-admin-canceledlog" type="button" onclick="openCanceledLogModal()">
+  <span class="ico">📄</span>
+  <span>Lihat Cancel Log</span>
+</button>
+
   <button class="btn-admin-cleanup" type="button" onclick="openCleanupCanceledModal()">
   <span class="ico">🧹</span>
   <span>Bersihkan Pesanan Dibatalkan</span>
@@ -895,6 +900,43 @@ TSJP-20260109-0759-0037"
 
       <pre id="cleanupResultBox"
            style="margin-top:12px; background:#111; color:#fff; padding:10px; border-radius:10px; white-space:pre-wrap; display:none;"></pre>
+    </div>
+  </div>
+</div>
+<!-- =========================
+     MODAL: CANCELED LOG (ADMIN)
+========================= -->
+<div id="canceledLogModal" class="modal hidden">
+  <div class="modal-content" style="max-width:720px;">
+    <div class="modal-header">
+      <div class="modal-title">📄 Cancel Log</div>
+      <button class="modal-close" type="button" onclick="closeCanceledLogModal()">✖</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="set-row" style="gap:10px; align-items:flex-end;">
+        <div style="flex:1;">
+          <label style="display:block; font-weight:600; margin-bottom:6px;">Cari (no / alasan)</label>
+          <input id="canceledLogSearch" type="text" placeholder="ketik untuk filter..."
+                 style="width:100%; padding:10px; border:1px solid #ddd; border-radius:10px;">
+        </div>
+        <div style="width:140px;">
+          <label style="display:block; font-weight:600; margin-bottom:6px;">Limit</label>
+          <input id="canceledLogLimit" type="number" min="10" max="1000" value="200"
+                 style="width:100%; padding:10px; border:1px solid #ddd; border-radius:10px;">
+        </div>
+      </div>
+
+      <div class="cleanup-actions" style="margin-top:12px;">
+        <button class="btn" type="button" onclick="loadCanceledLog()" style="flex:1;">Muat</button>
+        <button class="btn" type="button" onclick="copyCanceledLog()" style="flex:1;">Copy</button>
+        <button class="btn" type="button" onclick="closeCanceledLogModal()" style="flex:1;">Tutup</button>
+      </div>
+
+      <div id="canceledLogInfo" style="margin-top:10px; font-size:12px; color:#6b7280;"></div>
+
+      <pre id="canceledLogBox"
+           style="margin-top:10px; background:#111; color:#fff; padding:10px; border-radius:10px; white-space:pre-wrap;"></pre>
     </div>
   </div>
 </div>
