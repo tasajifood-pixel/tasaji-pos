@@ -891,7 +891,7 @@ async function syncAllProductsToCache(){
     while(true){
       const { data, error } = await sb
         .from("master_items")
-        .select("item_id,item_code,item_name,thumbnail,sell_price,barcode,available_qty")
+        .select("item_id,item_code,item_name,thumbnail,sell_price,barcode")
         .order("item_name", { ascending:true })
         .range(from, from + size - 1);
 
@@ -902,6 +902,9 @@ async function syncAllProductsToCache(){
 
       from += size;
     }
+
+    // ✅ merge stok SSOT sebelum disimpan ke cache (offline akan pakai available_qty ini)
+    all = await mergeSSOTStockIntoProducts(all);
 
     saveProductsCache(all);
     localStorage.setItem("pos_products_cache_ts", String(Date.now()));
@@ -1880,7 +1883,7 @@ async function findProductByBarcode(barcode) {
   try {
     const { data, error } = await sb
       .from("master_items")
-      .select("item_id,item_code,item_name,thumbnail,sell_price,barcode,available_qty")
+      .select("item_id,item_code,item_name,thumbnail,sell_price,barcode")
       .eq("barcode", code)
       .limit(1)
       .single();
@@ -2197,6 +2200,72 @@ if (key === "piutang") {
 }
 
 
+
+// =====================================================
+// STOCK SSOT (v_stock_unified_ui) HELPERS
+// =====================================================
+// NOTE: DO NOT move product meta source from master_items.
+// We only replace stock source (available_qty) using SSOT view.
+async function fetchStockMapFromSSOT(itemCodes){
+  try{
+    const codes = (itemCodes || [])
+      .map(x => String(x || "").trim())
+      .filter(Boolean);
+
+    if(!codes.length) return {};
+
+    // Supabase IN has practical limits; chunk to be safe.
+    const CHUNK = 500;
+    const map = {};
+
+    for(let i=0;i<codes.length;i+=CHUNK){
+      const part = codes.slice(i, i+CHUNK);
+
+      const { data, error } = await sb
+        .from("v_stock_unified_ui")
+        .select("item_code,stock_final")
+        .in("item_code", part);
+
+      if(error){
+        console.error("fetchStockMapFromSSOT error", error);
+        continue;
+      }
+
+      (data || []).forEach(r=>{
+        const code = String(r.item_code || "").trim();
+        if(!code) return;
+        map[code] = Number(r.stock_final ?? 0);
+      });
+    }
+
+    return map;
+  }catch(err){
+    console.error("fetchStockMapFromSSOT unexpected error", err);
+    return {};
+  }
+}
+
+// merge SSOT stock into master_items rows
+async function mergeSSOTStockIntoProducts(rows){
+  const list = (rows || []).slice();
+  if(!list.length) return list;
+
+  const codes = list.map(x => x.item_code);
+  const stockMap = await fetchStockMapFromSSOT(codes);
+
+  list.forEach(p=>{
+    const code = String(p.item_code || "").trim();
+    const stockFinal = Number(stockMap[code] ?? 0);
+
+    // ✅ backward compatible field
+    p.available_qty = stockFinal;
+
+    // optional: keep for debugging (won't break old code)
+    p.stock_final = stockFinal;
+  });
+
+  return list;
+}
 /* =====================================================
    LOAD PRODUCTS
 ===================================================== */
@@ -2265,7 +2334,7 @@ const pages = Math.max(1, Math.ceil(total / pageSize));
 if (page > pages) page = pages;
 
 const start = (page - 1) * pageSize;
-const slice = list.slice(start, start + pageSize);
+const slice = mergedList.slice(start, start + pageSize);
 
 renderProducts(slice);
 updatePagination(total);
@@ -2284,7 +2353,7 @@ return;
   if (currentQuery) {
     q = q.or(`item_name.ilike.%${currentQuery}%,item_code.ilike.%${currentQuery}%,barcode.ilike.%${currentQuery}%`);
   }
-  if (filters.hideEmpty) q = q.gt("available_qty",0);
+  // NOTE: hideEmpty is applied after SSOT merge (available_qty is from SSOT)
   if (filters.hideKtn) q = q.not("item_name","ilike","%ktn%");
   // ==========================
   // APPLY SORT (ONLINE)
@@ -2330,37 +2399,60 @@ return;
 });
 
 
-    const total = list.length;
+    // ✅ merge SSOT stock (bundling/karton/promo) into available_qty
+    let mergedList = await mergeSSOTStockIntoProducts(list);
+    if (filters.hideEmpty) mergedList = mergedList.filter(p => Number(p.available_qty || 0) > 0);
+
+    const total = mergedList.length;
 
     const pages = Math.max(1, Math.ceil(total / pageSize));
     if (page > pages) page = pages;
 
     const start = (page - 1) * pageSize;
-    const slice = list.slice(start, start + pageSize);
+    const slice = mergedList.slice(start, start + pageSize);
 
     renderProducts(slice);
     updatePagination(total);
     return;
   }
 
-  // ==========================
-  // NON-BEST: normal range
-  // ==========================
-  const { data, count, error } = await q.range(from,to);
-  if (error) { console.error("loadProducts error", error); return; }
-
-  renderProducts(data||[]);
-  updatePagination(count||0);
-
-  if (error) {
-    console.error("loadProducts error", error);
-    return;
-  }
   
+// ==========================
+// NON-BEST: normal range
+// ==========================
 
-  renderProducts(data||[]);
-  updatePagination(count||0);
+// ✅ IMPORTANT: SSOT stock merge happens client-side.
+// If hideEmpty aktif, kita harus merge dulu baru bisa filter stok,
+// jadi kita ambil allData lalu paginate manual (mirip best seller).
+if (filters.hideEmpty) {
+  const { data: allData, error: eAll } = await q;
+  if (eAll) { console.error("loadProducts error", eAll); return; }
+
+  let list = await mergeSSOTStockIntoProducts(allData || []);
+  list = list.filter(p => Number(p.available_qty || 0) > 0);
+
+  const total = list.length;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (page > pages) page = pages;
+
+  const start = (page - 1) * pageSize;
+  const slice = mergedList.slice(start, start + pageSize);
+
+  renderProducts(slice);
+  updatePagination(total);
+  return;
 }
+
+const { data, count, error } = await q.range(from,to);
+if (error) { console.error("loadProducts error", error); return; }
+
+// merge stok SSOT untuk item yang tampil di page ini
+const merged = await mergeSSOTStockIntoProducts(data || []);
+
+renderProducts(merged || []);
+updatePagination(count || 0);
+}
+
 
 
 async function loadPriceMap() {
