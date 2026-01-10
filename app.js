@@ -5708,6 +5708,18 @@ async function txnCancelTransaction(){
 
   // (optional) konfirmasi ekstra
   if(!confirm("Yakin batalkan transaksi ini?\n\n" + orderNo)) return;
+// ✅ WAJIB: isi alasan pembatalan
+const reasonInput = prompt(
+  "Wajib isi alasan pembatalan sebelum transaksi dibatalkan.\n\nNo Pesanan: " + orderNo + "\n\nTulis alasan singkat:",
+  ""
+);
+if (reasonInput === null) return; // user batal
+const cancelReason = String(reasonInput || "").trim();
+if (!cancelReason) {
+  alert("Alasan pembatalan wajib diisi. Pembatalan dibatalkan.");
+  return;
+}
+
 
   const btnCancel = document.querySelector("#btn-cancel-transaction");
   const badgeStatus = document.querySelector("#txn-status-badge");
@@ -5729,7 +5741,7 @@ async function txnCancelTransaction(){
     }
 
     // ✅ NOTE: jangan pakai variabel 'note' yang belum didefinisikan
-    const cancelNote = "Canceled from POS";
+    const cancelNote = cancelReason; // note = alasan murni
     const canceledAtISO = new Date().toISOString();
     const canceledBy = (typeof getCurrentCashierEmail === "function"
       ? getCurrentCashierEmail()
@@ -5741,13 +5753,9 @@ async function txnCancelTransaction(){
     // =========================
     let { error: eUp } = await sb
       .from("pos_sales_orders")
-      .update({
-        status: "canceled",
-        canceled_at: canceledAtISO,
-        canceled_by: canceledBy,
-        canceled_note: cancelNote
-      })
-      .eq("salesorder_no", orderNo);
+.update({ status: "canceled" })
+.eq("salesorder_no", orderNo);
+
 
     // ✅ fallback kalau schema cache PostgREST belum kenal kolom canceled_*
     if(eUp && String(eUp.message || "").includes("schema cache")){
@@ -5804,13 +5812,13 @@ async function txnCancelTransaction(){
 
     // update state lokal biar UI konsisten tanpa refresh pun
     try{
-      if(TXN_SELECTED){
-        TXN_SELECTED.status = "canceled";
-        TXN_SELECTED.canceled_at = canceledAtISO;
-        TXN_SELECTED.canceled_by = canceledBy;
-        TXN_SELECTED.canceled_note = cancelNote;
-      }
-    } catch(_) {}
+  if(TXN_SELECTED){
+    TXN_SELECTED.status = "canceled";
+    // NOTE: kolom canceled_at / canceled_by tidak ada di pos_sales_orders (Supabase)
+    // jadi jangan simpan ke TXN_SELECTED biar tidak bikin state palsu.
+  }
+} catch(_) {}
+
 
     if(badgeStatus) badgeStatus.textContent = "Dibatalkan";
     if(btnCancel){
@@ -7828,5 +7836,160 @@ const { data, error } = await sb.rpc("pos_cleanup_canceled_orders", {
     }else{
       alert("ERROR: " + msg);
     }
+  }
+}
+
+/* =========================
+   ADMIN: VIEW CANCELED LOG
+========================= */
+window.CANCELED_LOG_ROWS = [];
+
+function openCanceledLogModal(){
+  const m = document.getElementById("canceledLogModal");
+  const box = document.getElementById("canceledLogBox");
+  const info = document.getElementById("canceledLogInfo");
+  const q = document.getElementById("canceledLogSearch");
+
+  if(box) box.textContent = "";
+  if(info) info.textContent = "";
+  if(q) q.value = "";
+
+  if(m) m.classList.remove("hidden");
+
+  // bind filter sekali (filter client-side, tidak panggil supabase per ketik)
+  const searchEl = document.getElementById("canceledLogSearch");
+  if(searchEl && !searchEl.__bound){
+    searchEl.__bound = true;
+    searchEl.addEventListener("input", () => renderCanceledLogFromCache());
+  }
+
+  // auto-load sekali biar langsung muncul
+  loadCanceledLog();
+}
+
+function closeCanceledLogModal(){
+  const m = document.getElementById("canceledLogModal");
+  if(m) m.classList.add("hidden");
+}
+
+async function loadCanceledLog(){
+  try{
+    if(typeof sb === "undefined" || !sb?.from){
+      throw new Error("Supabase client belum siap (variabel `sb` tidak ditemukan).");
+    }
+
+    const limitEl = document.getElementById("canceledLogLimit");
+    const box = document.getElementById("canceledLogBox");
+    const info = document.getElementById("canceledLogInfo");
+
+    const limit = Math.min(1000, Math.max(10, Number(limitEl?.value || 200)));
+
+    if(box) box.textContent = "Memuat cancel log...";
+
+    const { data, error } = await sb
+      .from("pos_canceled_orders")
+      .select("created_at, salesorder_no, created_by, note")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if(error) throw error;
+
+    window.CANCELED_LOG_ROWS = Array.isArray(data) ? data : [];
+    if(info) info.textContent = `Total loaded: ${window.CANCELED_LOG_ROWS.length}`;
+
+    renderCanceledLogFromCache();
+  }catch(e){
+    console.error("loadCanceledLog error:", e);
+    const box = document.getElementById("canceledLogBox");
+    const info = document.getElementById("canceledLogInfo");
+    if(info) info.textContent = "";
+    if(box) box.textContent = "ERROR: " + (e?.message || String(e));
+  }
+}
+
+function renderCanceledLogFromCache(){
+  const searchEl = document.getElementById("canceledLogSearch");
+  const box = document.getElementById("canceledLogBox");
+  const info = document.getElementById("canceledLogInfo");
+
+  const q = String(searchEl?.value || "").trim().toLowerCase();
+  const rows = Array.isArray(window.CANCELED_LOG_ROWS) ? window.CANCELED_LOG_ROWS : [];
+
+  const filtered = q
+    ? rows.filter(r => {
+        const a = String(r.salesorder_no || "").toLowerCase();
+        const b = String(r.note || "").toLowerCase();
+        const c = String(r.created_by || "").toLowerCase();
+        return a.includes(q) || b.includes(q) || c.includes(q);
+      })
+    : rows;
+
+  // Format output (rapi untuk audit + copy)
+  const lines = filtered.map(r => {
+    const dt = r.created_at ? String(r.created_at).replace("T"," ").replace("Z","") : "-";
+    const no = r.salesorder_no || "-";
+    const by = r.created_by || "-";
+    const note = (r.note || "").trim();
+    return `${dt} | ${no} | ${by} | ${note}`;
+  });
+
+  if(info){
+    const total = rows.length;
+    const show = filtered.length;
+    info.textContent = `Total: ${total} log • Tampil: ${show}`;
+  }
+  if(box) box.textContent = lines.length ? lines.join("\n") : "(Tidak ada data)";
+}
+
+function copyCanceledLog(){
+  const searchEl = document.getElementById("canceledLogSearch");
+  const q = String(searchEl?.value || "").trim().toLowerCase();
+
+  const rows = Array.isArray(window.CANCELED_LOG_ROWS) ? window.CANCELED_LOG_ROWS : [];
+  const filtered = q
+    ? rows.filter(r => {
+        const a = String(r.salesorder_no || "").toLowerCase();
+        const b = String(r.note || "").toLowerCase();
+        const c = String(r.created_by || "").toLowerCase();
+        return a.includes(q) || b.includes(q) || c.includes(q);
+      })
+    : rows;
+
+  // ✅ ambil NO PESANAN saja, unik
+  const seen = new Set();
+  const nos = [];
+  for(const r of filtered){
+    const no = String(r.salesorder_no || "").trim();
+    if(!no) continue;
+    if(seen.has(no)) continue;
+    seen.add(no);
+    nos.push(no);
+  }
+
+  const text = nos.join("\n").trim();
+  if(!text) return alert("Tidak ada nomor pesanan untuk di-copy.");
+
+  if(navigator?.clipboard?.writeText){
+    navigator.clipboard.writeText(text)
+      .then(() => alert("✅ Nomor pesanan berhasil di-copy."))
+      .catch(() => fallbackCopyText(text));
+  }else{
+    fallbackCopyText(text);
+  }
+}
+
+function fallbackCopyText(text){
+  try{
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    alert("✅ Cancel log berhasil di-copy.");
+  }catch(err){
+    alert("Gagal copy. Coba blok manual lalu Ctrl+C.");
   }
 }
