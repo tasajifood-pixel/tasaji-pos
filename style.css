@@ -3005,3 +3005,14 @@ body{
   font-size: 18px;
   line-height: 1;
 }
+#piutangSearch{
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  outline: none;
+}
+#piutangSearch:focus{
+  border-color:#F9A825;
+  box-shadow: 0 0 0 3px rgba(249,168,37,.15);
+}
