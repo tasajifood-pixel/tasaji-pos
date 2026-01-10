@@ -193,12 +193,14 @@ const panelReport = document.getElementById("panel-report");
 const panelPiutang = document.getElementById("panel-piutang");
 
 // PIUTANG MONITOR DOM
+// PIUTANG MONITOR DOM
 const piutangList = document.getElementById("piutangList");
 const piutangCountInfo = document.getElementById("piutangCountInfo");
 const piutangTotalInfo = document.getElementById("piutangTotalInfo");
-
+const piutangSearch = document.getElementById("piutangSearch");
 const piutangSort = document.getElementById("piutangSort");
 const btnPiutangRefresh = document.getElementById("btnPiutangRefresh");
+
 
 const productGrid = document.getElementById("productGrid");
 const pageInfo = document.getElementById("pageInfo");
@@ -6305,9 +6307,35 @@ function initPiutangUI(){
   // default: terlama
   if (piutangSort && !piutangSort.value) piutangSort.value = "oldest";
 
-  piutangSort?.addEventListener("change", () => loadPiutangMonitor(true));
-  btnPiutangRefresh?.addEventListener("click", () => loadPiutangMonitor(true));
+  // SORT: reload
+  piutangSort?.addEventListener("change", () => {
+    loadPiutangMonitor(true);
+  });
+
+  // REFRESH: reload
+  btnPiutangRefresh?.addEventListener("click", () => {
+    loadPiutangMonitor(true);
+  });
+
+  // SEARCH: debounce 250ms
+  let _piutangSearchTimer = null;
+  piutangSearch?.addEventListener("input", () => {
+    clearTimeout(_piutangSearchTimer);
+    _piutangSearchTimer = setTimeout(() => {
+      loadPiutangMonitor(true);
+    }, 250);
+  });
+
+  // ENTER biar langsung search (tanpa tunggu debounce)
+  piutangSearch?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      clearTimeout(_piutangSearchTimer);
+      loadPiutangMonitor(true);
+    }
+  });
 }
+
 
 function getPiutangSortOrder(){
   const v = String(piutangSort?.value || "oldest");
@@ -6353,19 +6381,50 @@ async function loadPiutangMonitor(force){
     const { data, error } = await q;
     if (error) throw error;
 
-    const rows = data || [];
+   const rows = data || [];
 CURRENT_PIUTANG_ROWS = rows;
 
-    if (piutangCountInfo) piutangCountInfo.textContent = `Total: ${rows.length} piutang`;
+// kalau tidak ada data piutang sama sekali
+if (!rows.length) {
+  if (piutangCountInfo) piutangCountInfo.textContent = `Total: 0 piutang`;
+  if (piutangTotalInfo) piutangTotalInfo.textContent = "Total Piutang: Rp 0";
 
-    if (!rows.length) {
-      piutangList.innerHTML = `
-        <div style="padding:16px;color:#666;">
-          ✅ Tidak ada piutang yang belum lunas.
-        </div>
-      `;
-      return;
-    }
+  piutangList.innerHTML = `
+    <div style="padding:16px;color:#666;">
+      ✅ Tidak ada piutang yang belum lunas.
+    </div>
+  `;
+  return;
+}
+
+// ===== FILTER KEYWORD (nama / no / hp) =====
+const kw = String(piutangSearch?.value || "").trim().toLowerCase();
+
+let filteredRows = rows;
+if (kw) {
+  filteredRows = rows.filter(r => {
+    const no = String(r.salesorder_no || "").toLowerCase();
+    const nm = String(r.customer_name || "").toLowerCase();
+    const ph = String(r.shipping_phone || "").toLowerCase();
+    return no.includes(kw) || nm.includes(kw) || ph.includes(kw);
+  });
+}
+
+// tampilkan count sesuai hasil filter
+if (piutangCountInfo) piutangCountInfo.textContent = `Total: ${filteredRows.length} piutang`;
+
+// kalau keyword ada tapi hasil kosong
+if (kw && !filteredRows.length) {
+  if (piutangTotalInfo) piutangTotalInfo.textContent = "Total Piutang: Rp 0";
+
+  piutangList.innerHTML = `
+    <div style="padding:16px;color:#666;">
+      🔎 Tidak ada hasil untuk pencarian: <b>${kw}</b>
+    </div>
+  `;
+  return;
+}
+
 
     
     // Ambil total pembayaran per salesorder_no (untuk hitung sisa piutang)
@@ -6395,21 +6454,21 @@ rows.forEach(r => {
   r.paid_total = paid;
   r.outstanding_amount = Math.max(0, total - paid);
 });
-// hitung total piutang (akumulasi Sisa)
-const totalPiutang = rows.reduce((sum, r) => sum + Number(r.outstanding_amount || 0), 0);
+// hitung total piutang (akumulasi Sisa) => pakai filteredRows
+const totalPiutang = filteredRows.reduce((sum, r) => sum + Number(r.outstanding_amount || 0), 0);
 
 // tampilkan di header
 if (window.piutangTotalInfo) {
   window.piutangTotalInfo.textContent = `Total Piutang: ${formatRupiah(totalPiutang)}`;
-} else if (typeof piutangTotalInfo !== "undefined" && piutangTotalInfo) {
-  // kalau Abi pakai const piutangTotalInfo (lebih rapi)
+} else if (piutangTotalInfo) {
   piutangTotalInfo.textContent = `Total Piutang: ${formatRupiah(totalPiutang)}`;
 }
 
-    // dipakai oleh tombol 'Bayar/Cicil'
-    window.PIUTANG_ROWS = rows;
+// dipakai oleh tombol 'Bayar/Cicil' => pakai filteredRows
+window.PIUTANG_ROWS = filteredRows;
 
-piutangList.innerHTML = rows.map((r,i) => {
+// render list => pakai filteredRows
+piutangList.innerHTML = filteredRows.map((r,i) => {
       const no = r.salesorder_no || "-";
       const dt = r.transaction_date ? formatDateID(r.transaction_date) : "-";
       const cust = r.customer_name || "Pelanggan Umum";
