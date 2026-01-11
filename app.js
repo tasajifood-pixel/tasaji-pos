@@ -5098,9 +5098,134 @@ function initTxnFilterUI(){
   const fromEl   = document.getElementById("txnDateFrom");
   const toEl     = document.getElementById("txnDateTo");
   const filterEl = document.getElementById("txnCashierFilter");
-  const payEl    = document.getElementById("txnPayFilter");
+    const payEl    = document.getElementById("txnPayFilter");
+  const pickEl   = document.getElementById("txnCashierPick");
+
 
   if(!fromEl || !toEl || !filterEl) return;
+  function setPickOptions(list){
+    if(!pickEl) return;
+
+    const current = pickEl.value || "";
+    pickEl.innerHTML = `<option value="">Pilih Kasir (Semua)</option>`;
+
+    (list || []).forEach(c => {
+      const id = c?.cashier_id || "";
+      const name = c?.cashier_name || id;
+      if(!id) return;
+
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = name;
+      pickEl.appendChild(opt);
+    });
+
+    pickEl.value = current; // coba pertahankan pilihan user kalau ada
+  }
+
+  // ================================
+  // (NEW) Ambil daftar kasir yang punya transaksi (sesuai tanggal filter)
+  // ================================
+  async function fetchCashiersHavingTransactions(startISO, endISO){
+    try{
+      const supabaseOK = await canReachSupabase();
+      let rows = [];
+
+      // A) OFFLINE: ambil dari localStorage (pos_offline_orders_v1)
+      const offline = (loadOfflineTransactions() || []).filter(o => {
+        const t = new Date(o.created_at || 0).toISOString();
+        if (startISO && t < startISO) return false;
+        if (endISO && t > endISO) return false;
+        return true;
+      });
+
+      offline.forEach(o => {
+        if (o.cashier_id) {
+          rows.push({ cashier_id: o.cashier_id, cashier_name: o.cashier_name || o.cashier_id });
+        }
+      });
+
+      // B) ONLINE: ambil dari pos_sales_orders (kasir yang benar-benar punya transaksi)
+      if (supabaseOK && isOnline()){
+        let q = sb
+          .from("pos_sales_orders")
+          .select("cashier_id,cashier_name,transaction_date,status")
+          .order("transaction_date", { ascending: false });
+
+        if (startISO && endISO) {
+          q = q.gte("transaction_date", startISO).lte("transaction_date", endISO);
+        }
+
+        // buang canceled (minimal)
+        q = q.not("status","ilike","canceled");
+
+        const { data, error } = await q;
+        if (error) throw error;
+
+        (data || []).forEach(r => {
+          if (r.cashier_id) {
+            rows.push({ cashier_id: r.cashier_id, cashier_name: r.cashier_name || r.cashier_id });
+          }
+        });
+      }
+
+      // DISTINCT by cashier_id
+      const map = new Map();
+      rows.forEach(r => {
+        if (!r.cashier_id) return;
+        if (!map.has(r.cashier_id)) map.set(r.cashier_id, r);
+      });
+
+      return Array.from(map.values());
+
+    }catch(e){
+      console.error("fetchCashiersHavingTransactions ERROR:", e);
+      return [];
+    }
+  }
+
+  function syncPickVisibility(){
+    if(!pickEl) return;
+
+    const show = (filterEl.value === "ALL");
+    pickEl.style.display = show ? "" : "none";
+
+    // kalau bukan ALL, pick harus reset biar benar2 semua/aktif
+    if(!show){
+      pickEl.value = "";
+      localStorage.setItem("txn_cashier_pick", "");
+    }
+  }
+
+
+  async function refreshTxnCashierPick(){
+    if (!pickEl) return;
+
+    // dropdown pick hanya relevan saat ALL
+    if (filterEl.value !== "ALL") return;
+
+    // ambil tanggal dari input
+    const fromVal = fromEl.value || "";
+    const toVal   = toEl.value || "";
+
+    let startISO = null, endISO = null;
+    if (fromVal && toVal) {
+      startISO = new Date(fromVal + "T00:00:00").toISOString();
+      endISO   = new Date(toVal   + "T23:59:59").toISOString();
+    }
+
+    const list = await fetchCashiersHavingTransactions(startISO, endISO);
+    setPickOptions(Array.isArray(list) ? list : []);
+  }
+  // ================================
+  // ================================
+  // (A) Isi dropdown pick dari TRANSAKSI (bukan dari pos_cashiers)
+  // ================================
+  refreshTxnCashierPick();
+
+  // (C) Update show/hide sesuai filter ALL/ACTIVE
+  // ================================
+  syncPickVisibility();
 
 
   // default: hari ini
@@ -5117,6 +5242,10 @@ function initTxnFilterUI(){
 const saved = localStorage.getItem("txn_cashier_filter"); // "ALL" | "ACTIVE"
 filterEl.value = saved || "ACTIVE";
 if (!saved) localStorage.setItem("txn_cashier_filter", filterEl.value);
+const savedPick = localStorage.getItem("txn_cashier_pick") || "";
+if (pickEl) pickEl.value = savedPick;
+syncPickVisibility();
+
 // default: metode pembayaran (ingat pilihan)
 const savedPay = localStorage.getItem("txn_pay_filter"); // "ALL" | "Cash" | "QRIS" | ...
 if (payEl) {
@@ -5124,18 +5253,68 @@ if (payEl) {
   if (!savedPay) localStorage.setItem("txn_pay_filter", payEl.value);
 }
 
+// ================================
+// (NEW) Isi dropdown "Pilih Kasir"
+// ================================
+if (pickEl) {
+
+  function setPickOptions(list){
+    const current = pickEl.value || "";
+    pickEl.innerHTML = `<option value="">Pilih Kasir (Semua)</option>`;
+
+    (list || []).forEach(c => {
+      const id = c?.cashier_id || "";
+      const name = c?.cashier_name || id;
+      if (!id) return;
+
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = name;
+      pickEl.appendChild(opt);
+    });
+
+    pickEl.value = current;
+  }
+
+  // (1) cache dulu biar instan
+  const cached = getCachedCashiers();
+  if (Array.isArray(cached) && cached.length) setPickOptions(cached);
+  else setPickOptions([]);
+
+  // (2) refresh dari Supabase (kalau online)  ✅ TARUH DI SINI
+  fetchCashiersFromSupabase().then(list => {
+    if (Array.isArray(list) && list.length) setPickOptions(list);
+  });
+
+} // ✅ tutup if(pickEl) di sini
 
 
- if(!TXN_FILTER_BOUND){
+// ===== setelah ini baru pasang event listener =====
+if(!TXN_FILTER_BOUND){
   TXN_FILTER_BOUND = true;
 
-  fromEl.addEventListener("change", () => loadTransactions(true));
-  toEl.addEventListener("change", () => loadTransactions(true));
-
-  filterEl.addEventListener("change", () => {
-    localStorage.setItem("txn_cashier_filter", filterEl.value);
+  fromEl.addEventListener("change", async () => {
+    await refreshTxnCashierPick();
     loadTransactions(true);
   });
+  toEl.addEventListener("change", async () => {
+    await refreshTxnCashierPick();
+    loadTransactions(true);
+  });
+
+  filterEl.addEventListener("change", async () => {
+  localStorage.setItem("txn_cashier_filter", filterEl.value);
+  syncPickVisibility(); // ✅ tambahin ini
+  await refreshTxnCashierPick();
+  loadTransactions(true);
+});
+if (pickEl) {
+  pickEl.addEventListener("change", () => {
+    localStorage.setItem("txn_cashier_pick", pickEl.value || "");
+    loadTransactions(true);
+  });
+}
+
 
   if (payEl) {
     payEl.addEventListener("change", () => {
@@ -5144,6 +5323,7 @@ if (payEl) {
     });
   }
 }
+
 }
 
 /* =====================================================
@@ -5298,6 +5478,11 @@ const cashierFilter =
   document.getElementById("txnCashierFilter")?.value
   || localStorage.getItem("txn_cashier_filter")
   || "ACTIVE";
+  const cashierPick =
+  document.getElementById("txnCashierPick")?.value
+  || localStorage.getItem("txn_cashier_pick")
+  || "";
+
 const payFilter =
   document.getElementById("txnPayFilter")?.value
   || localStorage.getItem("txn_pay_filter")
@@ -5311,8 +5496,10 @@ const activeCashierId =
   if (!supabaseOK) {
     const kw = ((txnSearchInput?.value || "").trim()).toLowerCase();
 
-    let list = loadOfflineTransactions()
-      .filter(x => !CASHIER_ID || x.cashier_id === CASHIER_ID);
+let list = loadOfflineTransactions();
+
+// NOTE: filter kasir di-handle di bawah sesuai pilihan (ACTIVE vs ALL + pick)
+// Jangan paksa dibatasi ke CASHIER_ID di sini, karena akan membuat filter ALL/Pilih Kasir tidak berfungsi.
 
     if (kw) {
       list = list.filter(x => {
@@ -5346,9 +5533,14 @@ const activeCashierId =
     }
 
     // filter kasir
-    if (cashierFilter === "ACTIVE" && activeCashierId) {
-      if (x.cashier_id !== activeCashierId) return false;
-    }
+if (cashierFilter === "ACTIVE" && activeCashierId) {
+  if (x.cashier_id !== activeCashierId) return false;
+} else if (cashierFilter === "ALL" && cashierPick) {
+  // ✅ ALL + pilih kasir tertentu
+  if (x.cashier_id !== cashierPick) return false;
+}
+return true;
+
 
     // ✅ filter metode pembayaran (OFFLINE)
     if (!txnPayFilterMatchOffline(x.payments, payFilter)) return false;
@@ -5396,7 +5588,10 @@ if (startISO && endISO) {
 // filter kasir
 if (cashierFilter === "ACTIVE" && activeCashierId) {
   q = q.eq("cashier_id", activeCashierId);
+} else if (cashierFilter === "ALL" && cashierPick) {
+  q = q.eq("cashier_id", cashierPick);
 }
+
 // ✅ filter metode pembayaran (ONLINE)
 const like = txnPayFilterToIlike(payFilter);
 
